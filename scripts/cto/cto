@@ -10,6 +10,8 @@
 #   cto repos                          list your repos and whether each is connected
 #   cto bump [--direct]                re-pin every connected repo to the current ai-dispatch main (PR per repo)
 #   cto retry 55                       put a Blocked/Review issue back to Ready so it dispatches again
+#   cto assign 51 build                CTO assignment: Agent Claude + Skill + labels, State Ready (dispatches)
+#   cto handback 55 57                 manual hand-back: issue -> Review with PR #57, PR gets cto:review
 #
 # Config: ~/.cto/config -> CTO_OWNER, CTO_DEFAULT_REPO (owner/repo).
 set -euo pipefail
@@ -23,7 +25,7 @@ here="$(cd "$(dirname "$self")" && pwd)"
 
 field() { sed -n "s/^\*\*$1:\*\*[[:space:]]*//p" | head -1; }
 
-usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
 
 cmd_new() {
   local repo="$CTO_DEFAULT_REPO" desc="${1:-}"
@@ -113,6 +115,26 @@ cmd_retry() {
   gh issue edit "$n" -R "$repo" --body "$new" >/dev/null && echo "#$n set to Ready; dispatch fires on this edit event." && sleep 3 && cmd_status "$n" "$repo"
 }
 
+cmd_assign() {
+  local n="${1:?issue number}" skill="${2:?skill: build|debug|review|qa|research|data}" repo="${3:-$CTO_DEFAULT_REPO}"
+  local Skill; Skill="$(tr '[:lower:]' '[:upper:]' <<<"${skill:0:1}")${skill:1}"; [ "$skill" = "qa" ] && Skill="QA"
+  local body; body="$(gh issue view "$n" -R "$repo" --json body --jq .body)"
+  local new; new="$(printf '%s' "$body" | sed -E "s/^\*\*State:\*\*.*/**State:** Ready/; s/^\*\*Agent:\*\*.*/**Agent:** Claude/; s/^\*\*Skill:\*\*.*/**Skill:** $Skill/; s/^\*\*Blocker:\*\*.*/**Blocker:** None/; s/^\*\*Next:\*\*.*/**Next:** Worker executing/")"
+  local old_labels; old_labels="$(gh issue view "$n" -R "$repo" --json labels --jq '[.labels[].name | select(startswith("agent:") or startswith("skill:"))] | join(",")')"
+  [ -n "$old_labels" ] && gh issue edit "$n" -R "$repo" --remove-label "$old_labels" >/dev/null
+  gh issue edit "$n" -R "$repo" --body "$new" --add-label "agent:claude,skill:$skill" >/dev/null
+  echo "#$n -> Ready / Claude / $Skill; dispatch fires now." && sleep 3 && cmd_status "$n" "$repo"
+}
+
+cmd_handback() {
+  local n="${1:?issue number}" pr="${2:?pr number}" repo="${3:-$CTO_DEFAULT_REPO}"
+  local body; body="$(gh issue view "$n" -R "$repo" --json body --jq .body)"
+  local new; new="$(printf '%s' "$body" | sed -E "s/^\*\*State:\*\*.*/**State:** Review/; s/^\*\*PR:\*\*.*/**PR:** #$pr/; s/^\*\*Blocker:\*\*.*/**Blocker:** None/; s/^\*\*Next:\*\*.*/**Next:** CTO review/")"
+  gh issue edit "$n" -R "$repo" --body "$new" >/dev/null
+  gh pr edit "$pr" -R "$repo" --add-label cto:review >/dev/null
+  echo "#$n -> Review with PR #$pr; PR labeled cto:review (GPT verdict within ~5 min while the Mac is awake)."
+}
+
 cmd_repos() {
   gh repo list "$CTO_OWNER" --limit 100 --no-archived --json nameWithOwner,isPrivate,pushedAt --jq '.[] | [.nameWithOwner, (if .isPrivate then "private" else "public" end), .pushedAt[:10]] | @tsv' \
   | while IFS=$'\t' read -r r vis pushed; do
@@ -127,6 +149,8 @@ case "${1:-}" in
   repos) cmd_repos ;;
   bump) shift; cmd_bump "$@" ;;
   retry) shift; cmd_retry "$@" ;;
+  assign) shift; cmd_assign "$@" ;;
+  handback) shift; cmd_handback "$@" ;;
   status|st) shift; cmd_status "$@" ;;
   list|ls) cmd_list ;;
   watch) shift; cmd_watch "$@" ;;
