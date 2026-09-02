@@ -27,6 +27,11 @@ EXECUTION_RULES = """- Read AGENTS.md and CLAUDE.md (whichever exist) before cha
   wait for a ChatGPT CTO decision.
 - Use one isolated worktree when code changes are required.
 - Run `{verify}` before opening or updating the PR.
+- Do not loop. Work the phases in order once. If the same fix fails twice, or
+  the verify command is still red after two repair attempts, stop: hand back
+  with `python3 -m scripts.dispatch complete` is NOT allowed in that case --
+  instead comment the exact evidence on the control issue and exit, so the
+  feature is blocked truthfully rather than retried blindly.
 - Take no consequential external action (merge, deploy, publish, credential
   change, purchase, booking, cancellation) without the authorization that
   action requires.

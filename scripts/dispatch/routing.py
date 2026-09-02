@@ -56,6 +56,10 @@ MODEL_KEY = "worker-model"
 EFFORT_KEY = "worker-effort"
 ACCESS_KEY = "worker-access"
 ACCESS_LEVELS = ("write", "read-only")
+#: Optional hard cap on agentic turns. A worker that loops burns the whole
+#: subscription window; the cap ends the run and the reconcile step blocks
+#: the feature truthfully instead.
+MAX_TURNS_KEY = "worker-max-turns"
 
 #: Tools every worker may use without a prompt. Reading, searching, and the
 #: bounded git/gh/python commands a mission needs to inspect and verify.
@@ -291,9 +295,15 @@ def parse_worker_routing(text: str, *, source: str = "skill file") -> dict[str, 
         problems.append(f"missing `{ACCESS_KEY}`")
     elif access not in ACCESS_LEVELS:
         problems.append(f"`{ACCESS_KEY}: {access}` is not one of {', '.join(ACCESS_LEVELS)}")
+    max_turns = _metadata_value(fm, MAX_TURNS_KEY)
+    if max_turns and not (max_turns.isdigit() and 0 < int(max_turns) <= 500):
+        problems.append(f"`{MAX_TURNS_KEY}: {max_turns}` is not an integer between 1 and 500")
     if problems:
         raise RoutingError(f"{source}: " + "; ".join(problems))
-    return {"model": model, "effort": effort, "access": access}
+    routing = {"model": model, "effort": effort, "access": access}
+    if max_turns:
+        routing["max_turns"] = max_turns
+    return routing
 
 
 def resolve_skill_file(
@@ -346,7 +356,10 @@ def read_all_worker_routing(
 
 def claude_args(routing: dict[str, Any]) -> str:
     """The extra CLI arguments the Claude worker step receives."""
-    return f"--model {routing['model']} --effort {routing['effort']}"
+    args = f"--model {routing['model']} --effort {routing['effort']}"
+    if routing.get("max_turns"):
+        args += f" --max-turns {routing['max_turns']}"
+    return args
 
 
 def allowed_tools(routing: dict[str, Any], verify: str = "") -> list[str]:

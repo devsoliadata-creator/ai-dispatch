@@ -8,6 +8,7 @@ metadata:
   worker-model: opus
   worker-effort: high
   worker-access: write
+  worker-max-turns: 100
 ---
 
 # Debug

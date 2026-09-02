@@ -864,8 +864,8 @@ def test_build_and_review_run_on_different_claude_workers():
     assert {k: build[k] for k in ("model", "effort", "access")} == {"model": "opus", "effort": "medium", "access": "write"}
     assert {k: review[k] for k in ("model", "effort", "access")} == {"model": "sonnet", "effort": "medium", "access": "read-only"}
     assert build["skill_file"] == ".agents/skills/build/SKILL.md"
-    assert claude_args(build) == "--model opus --effort medium"
-    assert claude_args(review) == "--model sonnet --effort medium"
+    assert claude_args(build).startswith("--model opus --effort medium")
+    assert claude_args(review).startswith("--model sonnet --effort medium")
 
 
 def test_skill_file_is_the_only_place_routing_is_configured():
@@ -999,7 +999,7 @@ def test_dispatch_command_hands_the_worker_its_model_and_effort(cli, tmp_path):
     cli(["dispatch", "--issue", "42", "--out", str(out)], api)
     decision = json.loads(out.read_text())
     assert {k: decision["worker"][k] for k in ("model", "effort", "access")} == {"model": "opus", "effort": "high", "access": "write"}
-    assert decision["claude_args"] == "--model opus --effort high"
+    assert decision["claude_args"].startswith("--model opus --effort high")
     assert "Bash(git push:*)" in decision["claude_settings"]["permissions"]["allow"]
     # The routing is not a secret and does not travel in the record comment.
     assert "--model" not in api.comments[0]["body"]
@@ -1162,3 +1162,18 @@ def test_every_verdict_clears_the_review_flag_on_the_pr():
     for comment in ("CTO: APPROVE", "CTO: REWORK\nfix it", "CTO: BLOCK why"):
         outcome = cto_verdict(_verdict_payload(comment))
         assert "cto:review" in outcome["pr_labels_remove"], comment
+
+
+def test_every_worker_has_a_turn_cap_against_loops():
+    routing = read_all_worker_routing(ROOT)
+    for skill, entry in routing.items():
+        assert entry.get("max_turns"), f"{skill} has no worker-max-turns"
+        assert f"--max-turns {entry['max_turns']}" in claude_args(entry)
+    with pytest.raises(RoutingError):
+        parse_worker_routing("---\nname: x\nmetadata:\n  worker-model: opus\n  worker-effort: low\n  worker-access: write\n  worker-max-turns: lots\n---\n")
+
+
+def test_missions_forbid_blind_retry_loops():
+    routing = read_all_worker_routing(ROOT)
+    mission = decide(snapshot(worker_routing=routing))["mission"]
+    assert "Do not loop" in mission and "fails twice" in mission
