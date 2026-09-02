@@ -8,6 +8,8 @@
 #   cto watch 55                       re-print status every 30 s until it needs you
 #   cto onboard owner/repo [--verify "npm test"] [--direct]   connect another repo (files, secret, labels, PR)
 #   cto repos                          list your repos and whether each is connected
+#   cto bump [--direct]                re-pin every connected repo to the current ai-dispatch main (PR per repo)
+#   cto retry 55                       put a Blocked/Review issue back to Ready so it dispatches again
 #
 # Config: ~/.cto/config -> CTO_OWNER, CTO_DEFAULT_REPO (owner/repo).
 set -euo pipefail
@@ -21,7 +23,7 @@ here="$(cd "$(dirname "$self")" && pwd)"
 
 field() { sed -n "s/^\*\*$1:\*\*[[:space:]]*//p" | head -1; }
 
-usage() { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
 
 cmd_new() {
   local repo="$CTO_DEFAULT_REPO" desc="${1:-}"
@@ -86,6 +88,31 @@ cmd_watch() {
   done
 }
 
+cmd_bump() {
+  local direct=0; [ "${1:-}" = "--direct" ] && direct=1
+  local sha; sha="$(gh api repos/$CTO_OWNER/ai-dispatch/commits/main --jq .sha)"
+  echo "ai-dispatch main = ${sha:0:12}"
+  gh repo list "$CTO_OWNER" --limit 100 --no-archived --json nameWithOwner --jq '.[].nameWithOwner' | while read -r r; do
+    gh api "repos/$r/contents/.github/workflows/ai-dispatch.yml" >/dev/null 2>&1 || continue
+    local dir="${CTO_WORKDIR:-$CTO_HOME/repos}/${r#*/}"
+    [ -d "$dir/.git" ] || gh repo clone "$r" "$dir" -- --quiet
+    local default; default="$(gh repo view "$r" --json defaultBranchRef --jq .defaultBranchRef.name)"
+    git -C "$dir" fetch --quiet origin "$default" && git -C "$dir" checkout --quiet -B chore/ai-dispatch-bump "origin/$default"
+    local changed; changed="$(python3 "$here/pin.py" "$dir" "$sha")"
+    if [ "$changed" = "already pinned" ]; then echo "  $r: already at ${sha:0:12}"; continue; fi
+    git -C "$dir" add -A && git -C "$dir" -c user.name=JM -c user.email=dev.soliadata@gmail.com commit -q -m "Pin ai-dispatch to ${sha:0:12}"
+    if [ "$direct" = 1 ]; then git -C "$dir" push --quiet origin "HEAD:$default" && echo "  $r: pushed to $default"
+    else git -C "$dir" push --quiet -f -u origin chore/ai-dispatch-bump && echo "  $r: $(gh pr create --repo "$r" --base "$default" --title "Pin ai-dispatch to ${sha:0:12}" --body "Reviewed shared-layer upgrade. Diff: https://github.com/$CTO_OWNER/ai-dispatch/compare/$(grep -o 'ai-dispatch/.github/workflows/dispatch.yml@[0-9a-f]*' <(git -C "$dir" show "origin/$default:.github/workflows/ai-dispatch.yml") | head -1 | cut -d@ -f2)...$sha" 2>/dev/null || echo "PR exists")"; fi
+  done
+}
+
+cmd_retry() {
+  local n="${1:?issue number}" repo="${2:-$CTO_DEFAULT_REPO}"
+  local body; body="$(gh issue view "$n" -R "$repo" --json body --jq .body)"
+  local new; new="$(printf '%s' "$body" | sed -E 's/^\*\*State:\*\*.*/**State:** Ready/; s/^\*\*Blocker:\*\*.*/**Blocker:** None/; s/^\*\*Next:\*\*.*/**Next:** Worker executing/; s/^\*\*Agent:\*\* Unassigned/**Agent:** Claude/')"
+  gh issue edit "$n" -R "$repo" --body "$new" >/dev/null && echo "#$n set to Ready; dispatch fires on this edit event." && sleep 3 && cmd_status "$n" "$repo"
+}
+
 cmd_repos() {
   gh repo list "$CTO_OWNER" --limit 100 --no-archived --json nameWithOwner,isPrivate,pushedAt --jq '.[] | [.nameWithOwner, (if .isPrivate then "private" else "public" end), .pushedAt[:10]] | @tsv' \
   | while IFS=$'\t' read -r r vis pushed; do
@@ -98,6 +125,8 @@ case "${1:-}" in
   new) shift; cmd_new "$@" ;;
   onboard) shift; exec bash "$here/onboard-repo.sh" "$@" ;;
   repos) cmd_repos ;;
+  bump) shift; cmd_bump "$@" ;;
+  retry) shift; cmd_retry "$@" ;;
   status|st) shift; cmd_status "$@" ;;
   list|ls) cmd_list ;;
   watch) shift; cmd_watch "$@" ;;

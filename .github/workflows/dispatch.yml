@@ -29,6 +29,10 @@ on:
         description: "Git ref of the dispatch layer to run"
         type: string
         default: main
+      setup_command:
+        description: "Installs the repo's dependencies on the runner BEFORE the worker starts (e.g. `pip install -r requirements.txt -r requirements-dev.txt`, `npm ci`). Runs with the runner's own permissions; the worker never installs anything."
+        type: string
+        default: ""
       ci_workflow:
         description: "The caller's CI workflow file to dispatch on a worker PR head (must accept `sha` and `pull` inputs; see templates/caller/.github/workflows/ci.yml). Empty = no canonical CI gate."
         type: string
@@ -97,6 +101,18 @@ jobs:
             printf '.claude/agents/\n' >> .git/info/exclude
           fi
 
+      # Dependencies are the runner's job. A worker that finds the verify
+      # command red because nothing is installed will try to install things,
+      # be denied, and burn its turns -- this step is what prevents that.
+      - name: Install the repository's dependencies
+        if: inputs.setup_command != ''
+        env:
+          SETUP: ${{ inputs.setup_command }}
+        run: |
+          echo "::group::setup_command"
+          bash -o pipefail -c "$SETUP"
+          echo "::endgroup::"
+
       - name: Decide and claim
         id: decide
         run: |
@@ -148,6 +164,9 @@ jobs:
           prompt: ${{ env.MISSION }}
           claude_args: ${{ steps.decide.outputs.claude_args }}
           settings: ${{ steps.decide.outputs.claude_settings }}
+          # Every tool call and permission denial in the run log: the only way
+          # to diagnose a worker that stalls. Logs are private to the repo.
+          show_full_output: "true"
 
       # Which pull request head, if any, still needs the canonical gate. Read
       # before the reconcile step below, because that step exits non-zero when

@@ -46,10 +46,21 @@ if [ "$verify" = "__auto__" ]; then
   else verify=""; fi
 fi
 echo "verify command: '${verify:-<none>}'"
+# --- setup command (what the RUNNER installs before the worker starts)
+setup=""
+if   [ -f requirements-dev.txt ] && [ -f requirements.txt ]; then setup="pip install -r requirements.txt -r requirements-dev.txt"
+elif [ -f requirements.txt ]; then setup="pip install -r requirements.txt"
+elif [ -f pyproject.toml ] && grep -q '^\[project\]' pyproject.toml; then setup="pip install -e ."
+elif [ -f package-lock.json ]; then setup="npm ci"
+elif [ -f package.json ]; then setup="npm install"; fi
+echo "setup command:  '${setup:-<none>}'"
+# --- the ai-dispatch commit this repo is pinned to (#56: never a mutable ref)
+sha="$(gh api repos/devsoliadata-creator/ai-dispatch/commits/main --jq .sha)"
+echo "pinning to ai-dispatch@${sha:0:12}"
 
 # --- caller workflow
 mkdir -p .github/workflows .github/ISSUE_TEMPLATE
-sed "s|      verify_command: \"\"|      verify_command: \"$verify\"|" "$tpl/.github/workflows/ai-dispatch.yml" > .github/workflows/ai-dispatch.yml
+cp "$tpl/.github/workflows/ai-dispatch.yml" .github/workflows/ai-dispatch.yml
 ci_gate="ci.yml"
 if [ ! -f .github/workflows/ci.yml ]; then
   if [ -n "$verify" ]; then
@@ -64,10 +75,7 @@ elif ! grep -q "workflow_dispatch" .github/workflows/ci.yml; then
   ci_gate=""
   echo "existing ci.yml has no workflow_dispatch inputs -> canonical CI gate off (add the template's inputs + report job later to enable)"
 fi
-# tell the caller whether to dispatch CI on worker PR heads
-if [ "$ci_gate" = "" ]; then
-  awk '/^      verify_command: /{print "      ci_workflow: \"\""} {print}' .github/workflows/ai-dispatch.yml > .github/workflows/ai-dispatch.yml.new && mv .github/workflows/ai-dispatch.yml.new .github/workflows/ai-dispatch.yml
-fi
+python3 "$here/pin.py" . "$sha" --setup "$setup" --verify "$verify" --ci "$ci_gate"
 
 [ -f AGENTS.md ] || cp "$tpl/AGENTS.md" AGENTS.md
 [ -f .github/ISSUE_TEMPLATE/feature.md ] || cp "$tpl/.github/ISSUE_TEMPLATE/feature.md" .github/ISSUE_TEMPLATE/feature.md

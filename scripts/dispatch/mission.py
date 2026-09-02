@@ -25,7 +25,12 @@ EXECUTION_RULES = """- Read AGENTS.md and CLAUDE.md (whichever exist) before cha
 - Preserve the recorded scope. Do not silently alter architecture or widen
   the mission; use the architecture-challenge format in AI_WORKFLOW.md and
   wait for a ChatGPT CTO decision.
-- Use one isolated worktree when code changes are required.
+- Work in THIS checkout on a new `claude/<slug>` branch (`git checkout -b`).
+  The runner is already isolated: do not create worktrees, do not `cd`
+  elsewhere, run every command from the repository root -- the tool
+  allow-list matches command prefixes and a leading `cd ... &&` is denied.
+- Dependencies are already installed by the workflow. Never install packages;
+  if the verify command fails on a missing module, report it as a blocker.
 - Run `{verify}` before opening or updating the PR.
 - Do not loop. Work the phases in order once. If the same fix fails twice, or
   the verify command is still red after two repair attempts, stop: hand back

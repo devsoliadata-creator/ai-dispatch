@@ -1,7 +1,9 @@
 name: AI dispatch
 
-# Thin caller. All logic lives in devsoliadata-creator/ai-dispatch.
-# Per-repo settings: only `verify_command` below.
+# Thin caller. All logic lives in devsoliadata-creator/ai-dispatch, pinned to
+# one reviewed commit: every `@<sha>` below and `dispatch_ref` must agree.
+# `cto bump` updates them together. Per-repo settings: setup_command,
+# verify_command, ci_workflow.
 
 on:
   issues:
@@ -27,9 +29,6 @@ jobs:
     concurrency:
       group: feature-dispatch-${{ github.event.issue.number || inputs.issue }}
       cancel-in-progress: false
-    # The cap for the reusable workflow's jobs. Its worker job re-declares a
-    # narrower set (no `actions`); only the separate canonical-ci job uses
-    # `actions: write`, to start this repo's CI on the worker PR head.
     permissions:
       contents: write
       issues: write
@@ -40,6 +39,8 @@ jobs:
     with:
       issue: "${{ github.event.issue.number || inputs.issue }}"
       force: ${{ inputs.force == true }}
+      # REPLACE: how the runner installs this repo's dependencies before the worker starts ("" if none).
+      setup_command: ""
       # REPLACE with this repo's one test/lint entry point, or leave "" for none.
       # Approved shapes: python3 <file>.py | python3 -m pytest | npm test | npm run <name> | make <target> | dotnet test | go test | cargo test
       verify_command: ""
@@ -53,7 +54,7 @@ jobs:
     permissions:
       contents: read
       issues: write
-      pull-requests: write
+      pull-requests: read
     uses: devsoliadata-creator/ai-dispatch/.github/workflows/pr-sync.yml@main
     with:
       pull: "${{ github.event.pull_request.number }}"
