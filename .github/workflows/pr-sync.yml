@@ -15,6 +15,10 @@ on:
         description: "The pull_request event action (opened, ready_for_review, closed, ...)"
         type: string
         default: ""
+      deploy_workflow:
+        description: "Workflow file to trigger on the default branch once a CTO-approved PR merges (e.g. deploy-vps.yml). Empty = no auto-deploy."
+        type: string
+        default: ""
       dispatch_repo:
         type: string
         default: devsoliadata-creator/ai-dispatch
@@ -28,6 +32,9 @@ on:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    outputs:
+      done: ${{ steps.sync.outputs.done }}
+      issue: ${{ steps.sync.outputs.issue }}
     permissions:
       contents: read
       issues: write
@@ -49,7 +56,16 @@ jobs:
         with:
           python-version: "3.12"
       - name: Sync the control issue
-        run: python -P -m scripts.dispatch pr-sync --pull "$PULL"
+        id: sync
+        run: |
+          python -P -m scripts.dispatch pr-sync --pull "$PULL" --out "$RUNNER_TEMP/sync.json"
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          d = json.load(open(os.path.join(os.environ["RUNNER_TEMP"], "sync.json")))
+          done = (d.get("status_updates") or {}).get("State") == "Done"
+          print(f"done={'true' if done else 'false'}")
+          print(f"issue={d.get('issue') or ''}")
+          PY
 
       # One comment the owner copies whole into ChatGPT. Kept under GitHub's
       # 65k comment limit; a longer diff is truncated with a note.
@@ -71,3 +87,31 @@ jobs:
           gh label create cto:review --repo "$GITHUB_REPOSITORY" --color e4e669 --description "Awaiting the CTO verdict" --force >/dev/null 2>&1 || true
           gh label create cto:approved --repo "$GITHUB_REPOSITORY" --color 0e8a16 --description "CTO approved; owner merges" --force >/dev/null 2>&1 || true
           gh pr edit "$PULL" --repo "$GITHUB_REPOSITORY" --add-label cto:review
+
+  # Deploy is a consequence of a CTO-approved merge, not of any push: it runs
+  # only when the sync above moved the feature to Done. Separate job because
+  # starting a workflow needs `actions: write`. The target workflow keeps its
+  # own gates (its `production` environment can still require a reviewer).
+  deploy:
+    needs: sync
+    if: needs.sync.outputs.done == 'true' && inputs.deploy_workflow != ''
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      issues: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      DEPLOY: ${{ inputs.deploy_workflow }}
+      BASE: ${{ github.event.repository.default_branch }}
+      ISSUE: ${{ needs.sync.outputs.issue }}
+    steps:
+      - name: Trigger the repository's deploy workflow
+        run: |
+          gh workflow run "$DEPLOY" --ref "$BASE"
+          sleep 8
+          url="$(gh run list --workflow "$DEPLOY" -L 1 --json url --jq '.[0].url')"
+          echo "::notice title=Deploy::triggered $DEPLOY on $BASE -> $url"
+          if [ -n "$ISSUE" ]; then
+            gh issue comment "$ISSUE" --body "🚀 **Deploy triggered** (\`$DEPLOY\` on \`$BASE\` after the CTO-approved merge): $url"
+          fi

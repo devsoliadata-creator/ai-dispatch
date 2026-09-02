@@ -289,6 +289,7 @@ def cmd_pr_sync(args: argparse.Namespace) -> int:
             "record": record,
         }
     )
+    outcome["issue"] = issue_number
     if outcome["action"] != "skip":
         _apply(api, issue_number, issue.get("body") or "", outcome, comment_id)
     _emit(outcome, args.out)

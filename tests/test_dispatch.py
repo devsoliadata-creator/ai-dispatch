@@ -1213,3 +1213,13 @@ def test_workers_can_do_real_git_work_but_never_the_dangerous_verbs():
         assert guard in build["permissions"]["deny"], guard
     review = allowed_tools(read_worker_routing("Review", ROOT))
     assert "Bash(git:*)" not in review and "Bash(git diff:*)" in review
+
+
+def test_pr_sync_command_reports_the_issue_for_the_deploy_job(cli, tmp_path):
+    body = apply_status(issue_body(state="Review", pr="#43", nxt="JM merge"), {})
+    api = FakeGitHub(_issue(body=body), pull={"number": 43, "state": "closed", "merged": True, "draft": False,
+                                            "body": "Control issue: #42"})
+    out = tmp_path / "sync.json"
+    cli(["pr-sync", "--pull", "43", "--out", str(out)], api)
+    d = json.loads(out.read_text())
+    assert d["issue"] == 42 and d["status_updates"]["State"] == "Done"

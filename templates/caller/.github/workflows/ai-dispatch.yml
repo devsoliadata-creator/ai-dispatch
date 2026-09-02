@@ -54,11 +54,14 @@ jobs:
     permissions:
       contents: read
       issues: write
-      pull-requests: read
+      pull-requests: write
+      actions: write
     uses: devsoliadata-creator/ai-dispatch/.github/workflows/pr-sync.yml@main
     with:
       pull: "${{ github.event.pull_request.number }}"
       action: ${{ github.event.action }}
+      # REPLACE with this repo's deploy workflow file to auto-deploy after a CTO-approved merge ("" = never).
+      deploy_workflow: ""
     secrets: inherit
 
   # The owner pastes ChatGPT's verdict on the PR: `CTO: APPROVE` / `CTO: REWORK ...` / `CTO: BLOCK ...`
