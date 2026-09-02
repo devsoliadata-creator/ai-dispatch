@@ -31,6 +31,25 @@ run_engine() {  # run_engine <workdir> <outfile> <prompt> [--write]
     ( cd "$dir" && claude -p "$prompt" --output-format text --max-turns 60 --allowedTools "$tools" ${model_arg[@]+"${model_arg[@]}"} ) > "$out"
   fi
 }
+# ---- sync: push commits that Claude (Cowork) left on this Mac. Repos listed in
+# CTO_SYNC_REPOS (space-separated paths); only fast-forward pushes of a clean
+# checkout on its tracked branch, so nothing here can rewrite history.
+CTO_SYNC_REPOS="${CTO_SYNC_REPOS:-$HOME/dev/ai-dispatch $HOME/dev/personal-assistant}"
+sync_repos() {
+  local d
+  for d in $CTO_SYNC_REPOS; do
+    [ -d "$d/.git" ] || continue
+    if [ -n "$(git -C "$d" status --porcelain)" ]; then log "sync: $d has uncommitted changes; not pushing"; continue; fi
+    git -C "$d" fetch --quiet origin 2>/dev/null || { log "sync: fetch failed for $d"; continue; }
+    local ahead; ahead="$(git -C "$d" rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)"
+    local behind; behind="$(git -C "$d" rev-list --count 'HEAD..@{u}' 2>/dev/null || echo 0)"
+    if [ "$ahead" -gt 0 ] && [ "$behind" -eq 0 ]; then
+      git -C "$d" push --quiet && log "sync: pushed $ahead commit(s) from $d" || log "sync: push failed for $d"
+    elif [ "$ahead" -gt 0 ]; then
+      log "sync: $d is ahead $ahead and behind $behind; needs a rebase (not automatic)"
+    fi
+  done
+}
 LOCK="$CTO_HOME/review.lock"
 mkdir -p "$CTO_WORKDIR" "$CTO_HOME/log"
 
@@ -39,6 +58,7 @@ log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*"; }
 # One run at a time (launchd fires every few minutes).
 if ! mkdir "$LOCK" 2>/dev/null; then log "another run is active; exiting"; exit 0; fi
 trap 'rmdir "$LOCK"' EXIT
+sync_repos
 
 for tool in gh git jq "$CTO_ENGINE"; do
   command -v "$tool" >/dev/null || { log "missing $tool"; exit 1; }
