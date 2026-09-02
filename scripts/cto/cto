@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# One command for the whole loop.
+#
+#   cto new "what you want"            file a control issue (GPT writes it) in the default repo
+#   cto new owner/repo "what you want" ... in another repo
+#   cto status 55                      where issue #55 is: state, PR, CI, CTO verdict, last events
+#   cto list                           every open control issue across your repos, plus PRs waiting on you
+#   cto watch 55                       re-print status every 30 s until it needs you
+#
+# Config: ~/.cto/config -> CTO_OWNER, CTO_DEFAULT_REPO (owner/repo).
+set -euo pipefail
+CTO_HOME="${CTO_HOME:-$HOME/.cto}"
+[ -f "$CTO_HOME/config" ] && . "$CTO_HOME/config"
+CTO_OWNER="${CTO_OWNER:-devsoliadata-creator}"
+CTO_DEFAULT_REPO="${CTO_DEFAULT_REPO:-$CTO_OWNER/personal_assistant}"
+here="$(cd "$(dirname "$0")" && pwd)"
+
+field() { sed -n "s/^\*\*$1:\*\*[[:space:]]*//p" | head -1; }
+
+usage() { sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+
+cmd_new() {
+  local repo="$CTO_DEFAULT_REPO" desc="${1:-}"
+  if [[ "${1:-}" == */* && -n "${2:-}" ]]; then repo="$1"; desc="$2"; fi
+  [ -n "$desc" ] || usage
+  exec bash "$here/cto-new.sh" "$repo" "$desc"
+}
+
+cmd_status() {
+  local n="${1:?issue number}" repo="${2:-$CTO_DEFAULT_REPO}"
+  local body; body="$(gh issue view "$n" -R "$repo" --json body --jq .body)"
+  local state agent skill pr blocker next
+  state="$(field State <<<"$body")"; agent="$(field Agent <<<"$body")"; skill="$(field Skill <<<"$body")"
+  pr="$(field PR <<<"$body")"; blocker="$(field Blocker <<<"$body")"; next="$(field Next <<<"$body")"
+  printf '%s#%s  %s\n' "$repo" "$n" "$(gh issue view "$n" -R "$repo" --json title --jq .title)"
+  printf '  State: %-12s Agent/Skill: %s / %s\n  Blocker: %s\n  Next: %s\n' "$state" "$agent" "$skill" "$blocker" "$next"
+  if [[ "$pr" =~ \#([0-9]+) ]]; then
+    local pn="${BASH_REMATCH[1]}"
+    local pj; pj="$(gh pr view "$pn" -R "$repo" --json url,state,isDraft,labels,statusCheckRollup,comments)"
+    printf '  PR #%s: %s %s%s\n' "$pn" "$(jq -r .state <<<"$pj")" "$(jq -r '.labels|map(.name)|join(",")' <<<"$pj")" "$(jq -r 'if .isDraft then " (draft)" else "" end' <<<"$pj")"
+    printf '      %s\n' "$(jq -r .url <<<"$pj")"
+    jq -r '.statusCheckRollup[]? | "      check: \(.name // .context) \(.conclusion // .state)"' <<<"$pj"
+    jq -r '[.comments[] | select(.body | test("^\\s*CTO:"))] | last | if . then "      verdict: " + (.body | split("\n")[0]) + "  (" + .createdAt + ")" else "      verdict: none yet" end' <<<"$pj"
+  else
+    printf '  PR: none yet\n'
+  fi
+  printf '  Last dispatch runs:\n'
+  gh run list -R "$repo" -L 3 --workflow ai-dispatch.yml --json event,status,conclusion,createdAt \
+    --jq '.[] | "      \(.createdAt) \(.event) \(.status) \(.conclusion // "")"'
+  case "$state" in
+    Blocked) printf '\n  >> NEEDS YOU: %s\n' "$blocker" ;;
+    Review) [[ "$next" == *merge* ]] && printf '\n  >> NEEDS YOU: merge the PR\n' || printf '\n  waiting on the CTO verdict (Mac must be awake)\n' ;;
+    Done) printf '\n  done.\n' ;;
+    "In Progress") printf '\n  Claude is working; check back in a few minutes.\n' ;;
+    Ready) printf '\n  queued; dispatch fires on the next issue event (or: gh workflow run ai-dispatch.yml -f issue=%s)\n' "$n" ;;
+  esac
+}
+
+cmd_list() {
+  printf 'OPEN CONTROL ISSUES (%s)\n' "$CTO_OWNER"
+  gh search issues --owner "$CTO_OWNER" --state open "Current status" --match body --limit 50 \
+    --json repository,number,title,body,url --jq '.[] | [.repository.nameWithOwner, .number, .title, .body] | @tsv' \
+  | while IFS=$'\t' read -r repo num title body; do
+      b="$(printf '%b' "$body")"
+      printf '  %-12s #%-4s %-13s %-8s PR:%-6s %s\n' "${repo#*/}" "$num" "$(field State <<<"$b")" "$(field Skill <<<"$b")" "$(field PR <<<"$b")" "${title:0:60}"
+    done
+  printf '\nPRS WAITING ON YOU (cto:approved)\n'
+  gh search prs --owner "$CTO_OWNER" --state open --label cto:approved --limit 20 --json repository,number,title,url \
+    --jq '.[] | "  \(.repository.nameWithOwner)#\(.number) \(.title)\n      \(.url)"'
+  printf '\nPRS AWAITING CTO VERDICT (cto:review)\n'
+  gh search prs --owner "$CTO_OWNER" --state open --label cto:review --limit 20 --json repository,number,title \
+    --jq '.[] | "  \(.repository.nameWithOwner)#\(.number) \(.title)"'
+}
+
+cmd_watch() {
+  local n="${1:?issue number}" repo="${2:-$CTO_DEFAULT_REPO}"
+  while true; do
+    clear; date; echo; cmd_status "$n" "$repo"
+    local body state; body="$(gh issue view "$n" -R "$repo" --json body --jq .body)"; state="$(field State <<<"$body")"
+    case "$state" in Blocked|Done) break ;; Review) grep -q "JM merge" <<<"$body" && break ;; esac
+    sleep 30
+  done
+}
+
+case "${1:-}" in
+  new) shift; cmd_new "$@" ;;
+  status|st) shift; cmd_status "$@" ;;
+  list|ls) cmd_list ;;
+  watch) shift; cmd_watch "$@" ;;
+  *) usage ;;
+esac

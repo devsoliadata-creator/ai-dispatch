@@ -27,8 +27,13 @@ CTO_REPOS=""
 CTO_PROMPT="$here/../../docs/CHATGPT-CTO-PROMPT.md"
 # Optional Codex model override, e.g. gpt-5-codex
 CTO_MODEL=""
+# Repo used by `cto new "..."` / `cto status N` when none is given
+CTO_DEFAULT_REPO=devsoliadata-creator/personal_assistant
 EOF
-chmod +x "$here"/*.sh
+chmod +x "$here"/*.sh "$here/cto"
+# `cto` on the PATH for zsh
+mkdir -p "$HOME/.local/bin" && ln -sf "$here/cto" "$HOME/.local/bin/cto"
+grep -q 'HOME/.local/bin' "$HOME/.zshrc" 2>/dev/null || printf '\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$HOME/.zshrc"
 
 codex_bin="$(dirname "$(command -v codex)")"
 gh_bin="$(dirname "$(command -v gh)")"
@@ -51,5 +56,4 @@ EOF
 launchctl unload "$plist" 2>/dev/null || true
 launchctl load "$plist"
 echo "Installed. Runs every 5 min; log: $CTO_HOME/log/review.log"
-echo "Manual run:   bash $here/cto-review.sh"
-echo "New issue:    bash $here/cto-new.sh owner/repo \"describe the change\""
+echo "Commands (open a new Terminal tab first):  cto new \"...\"   cto status N   cto list   cto watch N"
