@@ -71,7 +71,7 @@ Produce the review exactly as the packet section of your instructions says: find
 
 out="$CTO_HOME/log/$(date +%Y%m%d-%H%M%S)-${repo#*/}-$number.md"
   model_arg=(); [ -n "$CTO_MODEL" ] && model_arg=(-m "$CTO_MODEL")
-  if ! codex exec --sandbox read-only -C "$dir" --skip-git-repo-check "${model_arg[@]}" \
+  if ! codex exec --sandbox read-only -C "$dir" --skip-git-repo-check ${model_arg[@]+"${model_arg[@]}"} \
         -o "$out" "$prompt" >"$out.run" 2>&1; then
     log "codex failed for $repo#$number (see $out.run)"; continue
   fi

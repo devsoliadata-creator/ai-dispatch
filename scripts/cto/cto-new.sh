@@ -35,7 +35,7 @@ Nothing else. If a JM decision is required first, set State: Blocked with the Bl
 
 out="$CTO_HOME/log/$(date +%Y%m%d-%H%M%S)-new-${repo#*/}.md"
 model_arg=(); [ -n "$CTO_MODEL" ] && model_arg=(-m "$CTO_MODEL")
-codex exec --sandbox read-only -C "$dir" --skip-git-repo-check "${model_arg[@]}" -o "$out" "$prompt" >"$out.run" 2>&1
+codex exec --sandbox read-only -C "$dir" --skip-git-repo-check ${model_arg[@]+"${model_arg[@]}"} -o "$out" "$prompt" >"$out.run" 2>&1
 
 labels="$(grep -E '^LABELS:' "$out" | tail -1 | sed 's/^LABELS:[[:space:]]*//; s/[[:space:]]//g')"
 [ -n "$labels" ] || { echo "Codex did not return a LABELS line; see $out"; exit 1; }
