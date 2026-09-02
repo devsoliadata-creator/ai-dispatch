@@ -91,7 +91,7 @@ jobs:
         run: |
           force=""
           if [ "$FORCE" = "true" ]; then force="--force"; fi
-          python -m scripts.dispatch dispatch \
+          python -P -m scripts.dispatch dispatch \
             --issue "$ISSUE" $force \
             --out "$RUNNER_TEMP/decision.json"
           python - <<'PY' >> "$GITHUB_OUTPUT"
@@ -153,7 +153,7 @@ jobs:
           else
             detail="No $AGENT invocation ran in this repository, so no worker is executing. Re-dispatch once a callable $AGENT lane is configured."
           fi
-          python -m scripts.dispatch mark-failed \
+          python -P -m scripts.dispatch mark-failed \
             --issue "$ISSUE" \
             --blocker "$AGENT invocation failed" \
             --detail "$detail"

@@ -49,7 +49,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Sync the control issue
-        run: python -m scripts.dispatch pr-sync --pull "$PULL"
+        run: python -P -m scripts.dispatch pr-sync --pull "$PULL"
 
       # One comment the owner copies whole into ChatGPT. Kept under GitHub's
       # 65k comment limit; a longer diff is truncated with a note.

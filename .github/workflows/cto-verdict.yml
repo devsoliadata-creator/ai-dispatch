@@ -51,4 +51,4 @@ jobs:
         with:
           python-version: "3.12"
       - name: Relay the verdict to the control issue
-        run: python -m scripts.dispatch cto-verdict --pull "${{ inputs.pull }}"
+        run: python -P -m scripts.dispatch cto-verdict --pull "${{ inputs.pull }}"
