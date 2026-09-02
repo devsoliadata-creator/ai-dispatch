@@ -27,11 +27,15 @@ jobs:
     concurrency:
       group: feature-dispatch-${{ github.event.issue.number || inputs.issue }}
       cancel-in-progress: false
+    # The cap for the reusable workflow's jobs. Its worker job re-declares a
+    # narrower set (no `actions`); only the separate canonical-ci job uses
+    # `actions: write`, to start this repo's CI on the worker PR head.
     permissions:
       contents: write
       issues: write
       pull-requests: write
       id-token: write
+      actions: write
     uses: devsoliadata-creator/ai-dispatch/.github/workflows/dispatch.yml@main
     with:
       issue: "${{ github.event.issue.number || inputs.issue }}"
