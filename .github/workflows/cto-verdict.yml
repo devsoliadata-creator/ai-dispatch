@@ -1,0 +1,54 @@
+name: CTO verdict (reusable)
+
+# ChatGPT (free plan) has no API, so its review reaches GitHub as a comment
+# the owner pastes on the PR. A comment starting with `CTO: APPROVE`,
+# `CTO: REWORK` or `CTO: BLOCK` is relayed to the control issue here.
+# Only comments from OWNER / MEMBER / COLLABORATOR count.
+
+on:
+  workflow_call:
+    inputs:
+      pull:
+        required: true
+        type: string
+      comment_body:
+        required: true
+        type: string
+      author_association:
+        required: true
+        type: string
+      dispatch_repo:
+        type: string
+        default: devsoliadata-creator/ai-dispatch
+      dispatch_ref:
+        type: string
+        default: main
+    secrets:
+      DISPATCH_REPO_TOKEN:
+        required: false
+
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PYTHONPATH: ${{ github.workspace }}/.ai-dispatch
+      CTO_COMMENT_BODY: ${{ inputs.comment_body }}
+      CTO_COMMENT_AUTHOR_ASSOCIATION: ${{ inputs.author_association }}
+    steps:
+      - name: Check out the shared dispatch layer
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.dispatch_repo }}
+          ref: ${{ inputs.dispatch_ref }}
+          path: .ai-dispatch
+          token: ${{ secrets.DISPATCH_REPO_TOKEN || github.token }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Relay the verdict to the control issue
+        run: python -m scripts.dispatch cto-verdict --pull "${{ inputs.pull }}"

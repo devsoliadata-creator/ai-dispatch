@@ -1,0 +1,35 @@
+name: AI dispatch labels (reusable)
+
+on:
+  workflow_call:
+
+permissions:
+  issues: write
+
+jobs:
+  ensure-labels:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ensure agent and skill labels exist
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const labels = [
+              { name: "agent:claude", color: "1f6feb", description: "Execution worker: Claude" },
+              { name: "agent:codex", color: "8250df", description: "Execution worker: Codex" },
+              { name: "agent:local", color: "57606a", description: "Execution worker: Local" },
+              { name: "skill:build", color: "0e8a16", description: "Execution skill: bounded feature build" },
+              { name: "skill:debug", color: "d93f0b", description: "Execution skill: root-cause debugging" },
+              { name: "skill:review", color: "a371f7", description: "Execution skill: adversarial review" },
+              { name: "skill:qa", color: "fbca04", description: "Execution skill: user-visible QA" },
+              { name: "skill:research", color: "0969da", description: "Execution skill: bounded research" },
+              { name: "skill:data", color: "1b7c83", description: "Execution skill: verified data curation" },
+            ];
+            for (const label of labels) {
+              try {
+                await github.rest.issues.getLabel({ owner: context.repo.owner, repo: context.repo.repo, name: label.name });
+              } catch (error) {
+                if (error.status !== 404) throw error;
+                await github.rest.issues.createLabel({ owner: context.repo.owner, repo: context.repo.repo, ...label });
+              }
+            }

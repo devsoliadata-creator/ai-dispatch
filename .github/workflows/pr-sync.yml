@@ -1,0 +1,73 @@
+name: AI dispatch PR sync (reusable)
+
+# Keeps the feature control issue's PR field and state aligned with its one
+# active implementation PR, and posts the CTO review packet the owner pastes
+# into ChatGPT. Never opens an issue; marks a feature Done only when a
+# CTO-approved PR is merged.
+
+on:
+  workflow_call:
+    inputs:
+      pull:
+        required: true
+        type: string
+      action:
+        description: "The pull_request event action (opened, ready_for_review, closed, ...)"
+        type: string
+        default: ""
+      dispatch_repo:
+        type: string
+        default: devsoliadata-creator/ai-dispatch
+      dispatch_ref:
+        type: string
+        default: main
+    secrets:
+      DISPATCH_REPO_TOKEN:
+        required: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PYTHONPATH: ${{ github.workspace }}/.ai-dispatch
+      PULL: ${{ inputs.pull }}
+    steps:
+      - name: Check out the shared dispatch layer
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.dispatch_repo }}
+          ref: ${{ inputs.dispatch_ref }}
+          path: .ai-dispatch
+          token: ${{ secrets.DISPATCH_REPO_TOKEN || github.token }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Sync the control issue
+        run: python -m scripts.dispatch pr-sync --pull "$PULL"
+
+      # One comment the owner copies whole into ChatGPT. Kept under GitHub's
+      # 65k comment limit; a longer diff is truncated with a note.
+      - name: Post the CTO review packet
+        if: inputs.action == 'opened' || inputs.action == 'ready_for_review' || inputs.action == 'reopened'
+        run: |
+          body="$(gh pr view "$PULL" --repo "$GITHUB_REPOSITORY" --json title,body,headRefName,baseRefName,url --jq '"# " + .title + "\n\n" + .url + "\n\nBranch: " + .headRefName + " -> " + .baseRefName + "\n\n" + .body')"
+          stat="$(gh pr diff "$PULL" --repo "$GITHUB_REPOSITORY" | grep -E '^diff --git' | sed 's|^diff --git a/||; s| b/.*||' | sed 's/^/- /')"
+          diff="$(gh pr diff "$PULL" --repo "$GITHUB_REPOSITORY" | head -c 50000)"
+          note=""
+          if [ "$(gh pr diff "$PULL" --repo "$GITHUB_REPOSITORY" | wc -c)" -gt 50000 ]; then
+            note="\n\n_(diff truncated at 50 KB; open the PR for the rest)_"
+          fi
+          {
+            printf '## CTO review packet\n\nPaste everything below this line into ChatGPT CTO, then post its verdict here as a comment starting with `CTO: APPROVE`, `CTO: REWORK` or `CTO: BLOCK`.\n\n---\n\n'
+            printf '%s\n\n## Files changed\n\n%s\n\n## Diff\n\n```diff\n%s\n```%b\n' "$body" "$stat" "$diff" "$note"
+          } > "$RUNNER_TEMP/packet.md"
+          gh pr comment "$PULL" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/packet.md"
+          gh label create cto:review --repo "$GITHUB_REPOSITORY" --color e4e669 --description "Awaiting the CTO verdict" --force >/dev/null 2>&1 || true
+          gh label create cto:approved --repo "$GITHUB_REPOSITORY" --color 0e8a16 --description "CTO approved; owner merges" --force >/dev/null 2>&1 || true
+          gh pr edit "$PULL" --repo "$GITHUB_REPOSITORY" --add-label cto:review

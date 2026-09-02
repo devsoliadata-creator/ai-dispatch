@@ -1,0 +1,161 @@
+name: AI dispatch (reusable)
+
+# Reusable implementation of the feature-dispatch workflow. Target
+# repositories call it from a thin caller workflow (see templates/caller);
+# every routing, validation and idempotency rule lives in scripts/dispatch/
+# here and is unit-tested. This file only decides WHEN to run and WHICH
+# worker step to hand the mission to.
+
+on:
+  workflow_call:
+    inputs:
+      issue:
+        description: "Feature control issue number"
+        required: true
+        type: string
+      force:
+        description: "Re-dispatch even though an active claim exists"
+        type: boolean
+        default: false
+      verify_command:
+        description: "The one test/lint entry point the worker may run (e.g. `python3 scripts/validate.py`, `npm test`). Empty = none."
+        type: string
+        default: ""
+      dispatch_repo:
+        description: "Repository holding the shared dispatch layer"
+        type: string
+        default: devsoliadata-creator/ai-dispatch
+      dispatch_ref:
+        description: "Git ref of the dispatch layer to run"
+        type: string
+        default: main
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: false
+      ANTHROPIC_API_KEY:
+        required: false
+      DISPATCH_REPO_TOKEN:
+        description: "Only needed if dispatch_repo is private: a fine-grained PAT with Contents:read on it"
+        required: false
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      id-token: write
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      LANE_CLAUDE: ${{ (secrets.ANTHROPIC_API_KEY != '' || secrets.CLAUDE_CODE_OAUTH_TOKEN != '') && 'automatic' || 'manual' }}
+      LANE_CODEX: ${{ vars.CODEX_DISPATCH_LANE || 'manual' }}
+      LANE_LOCAL: ${{ vars.LOCAL_DISPATCH_LANE || 'manual' }}
+      ISSUE: ${{ inputs.issue }}
+      FORCE: ${{ inputs.force }}
+      DISPATCH_VERIFY_COMMAND: ${{ inputs.verify_command }}
+      # The dispatch package is imported from the shared checkout, so the
+      # worker's `python3 -m scripts.dispatch complete` resolves anywhere.
+      PYTHONPATH: ${{ github.workspace }}/.ai-dispatch
+    steps:
+      - name: Check out the target repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check out the shared dispatch layer
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.dispatch_repo }}
+          ref: ${{ inputs.dispatch_ref }}
+          path: .ai-dispatch
+          token: ${{ secrets.DISPATCH_REPO_TOKEN || github.token }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The shared checkout and any default sub-agents copied in must never
+      # end up in the worker's commit.
+      - name: Provide default sub-agents and hide the shared checkout from git
+        run: |
+          printf '.ai-dispatch/\n' >> .git/info/exclude
+          if [ ! -d .claude/agents ]; then
+            mkdir -p .claude/agents
+            cp .ai-dispatch/agents/*.md .claude/agents/
+            printf '.claude/agents/\n' >> .git/info/exclude
+          fi
+
+      - name: Decide and claim
+        id: decide
+        run: |
+          force=""
+          if [ "$FORCE" = "true" ]; then force="--force"; fi
+          python -m scripts.dispatch dispatch \
+            --issue "$ISSUE" $force \
+            --out "$RUNNER_TEMP/decision.json"
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          path = os.path.join(os.environ["RUNNER_TEMP"], "decision.json")
+          decision = json.load(open(path))
+          for key in ("action", "agent", "skill", "claude_args"):
+              print(f"{key}=" + " ".join(str(decision.get(key) or "").split()))
+          settings = decision.get("claude_settings")
+          if settings:
+              settings_path = os.path.join(os.environ["RUNNER_TEMP"], "claude-settings.json")
+              with open(settings_path, "w") as handle:
+                  json.dump(settings, handle)
+              print(f"claude_settings={settings_path}")
+          PY
+
+      - name: Stage the mission
+        if: steps.decide.outputs.action == 'dispatch'
+        run: |
+          python - <<'PY' >> "$GITHUB_ENV"
+          import json, os, uuid
+          path = os.path.join(os.environ["RUNNER_TEMP"], "decision.json")
+          mission = json.load(open(path))["mission"]
+          delimiter = "MISSION_EOF_" + uuid.uuid4().hex
+          print(f"MISSION<<{delimiter}")
+          print(mission)
+          print(delimiter)
+          PY
+
+      - name: Invoke Claude
+        id: claude
+        if: steps.decide.outputs.action == 'dispatch' && steps.decide.outputs.agent == 'Claude'
+        continue-on-error: true
+        # Pinned to an immutable commit (v1.0.211), not the mutable v1 tag:
+        # this step holds an Anthropic credential plus write permissions.
+        # Update: git ls-remote https://github.com/anthropics/claude-code-action refs/tags/<tag>
+        # and take the ^{} line.
+        uses: anthropics/claude-code-action@833fb0f8c9f6686b33d963a8bae0a94f4936ab2a # v1.0.211
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: ${{ env.MISSION }}
+          claude_args: ${{ steps.decide.outputs.claude_args }}
+          settings: ${{ steps.decide.outputs.claude_settings }}
+
+      - name: Record the invocation outcome
+        if: always() && steps.decide.outputs.action == 'dispatch'
+        env:
+          AGENT: ${{ steps.decide.outputs.agent }}
+          CLAUDE_OUTCOME: ${{ steps.claude.outcome }}
+        run: |
+          if [ "$AGENT" = "Claude" ] && [ "$CLAUDE_OUTCOME" = "success" ]; then
+            echo "::notice title=Feature dispatch::$AGENT invoked; the feature stays In Progress."
+            exit 0
+          fi
+          if [ "$AGENT" = "Claude" ] && [ "$CLAUDE_OUTCOME" = "failure" ]; then
+            detail="The $AGENT invocation step failed. The workflow logs hold the detail; the feature is recoverable and can be re-dispatched."
+          else
+            detail="No $AGENT invocation ran in this repository, so no worker is executing. Re-dispatch once a callable $AGENT lane is configured."
+          fi
+          python -m scripts.dispatch mark-failed \
+            --issue "$ISSUE" \
+            --blocker "$AGENT invocation failed" \
+            --detail "$detail"
+          echo "::error title=Feature dispatch::$detail"
+          exit 1

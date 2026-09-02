@@ -1,0 +1,7 @@
+interface:
+  display_name: "ChatGPT CTO"
+  short_description: "Support controlled engineering decisions"
+  default_prompt: "Use $cto-ops to inspect the active feature, reconcile recorded decisions, or prepare a decision-ready CTO handoff."
+
+policy:
+  allow_implicit_invocation: true

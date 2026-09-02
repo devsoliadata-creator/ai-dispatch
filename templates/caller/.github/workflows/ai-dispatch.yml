@@ -1,0 +1,77 @@
+name: AI dispatch
+
+# Thin caller. All logic lives in devsoliadata-creator/ai-dispatch.
+# Per-repo settings: only `verify_command` below.
+
+on:
+  issues:
+    types: [opened, edited, reopened, labeled, unlabeled]
+  pull_request:
+    types: [opened, edited, reopened, ready_for_review, converted_to_draft, closed]
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: "Feature control issue number"
+        required: true
+        type: string
+      force:
+        description: "Re-dispatch even though an active claim exists"
+        type: boolean
+        default: false
+
+jobs:
+  dispatch:
+    if: github.event_name == 'issues' || github.event_name == 'workflow_dispatch'
+    concurrency:
+      group: feature-dispatch-${{ github.event.issue.number || inputs.issue }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      id-token: write
+    uses: devsoliadata-creator/ai-dispatch/.github/workflows/dispatch.yml@main
+    with:
+      issue: "${{ github.event.issue.number || inputs.issue }}"
+      force: ${{ inputs.force == true }}
+      # REPLACE with this repo's one test/lint entry point, or leave "" for none.
+      # Approved shapes: python3 <file>.py | python3 -m pytest | npm test | npm run <name> | make <target> | dotnet test | go test | cargo test
+      verify_command: ""
+    secrets: inherit
+
+  pr-sync:
+    if: github.event_name == 'pull_request'
+    concurrency:
+      group: feature-pr-sync-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+    uses: devsoliadata-creator/ai-dispatch/.github/workflows/pr-sync.yml@main
+    with:
+      pull: "${{ github.event.pull_request.number }}"
+      action: ${{ github.event.action }}
+    secrets: inherit
+
+  # The owner pastes ChatGPT's verdict on the PR: `CTO: APPROVE` / `CTO: REWORK ...` / `CTO: BLOCK ...`
+  cto-verdict:
+    if: github.event_name == 'issue_comment' && github.event.issue.pull_request && startsWith(github.event.comment.body, 'CTO:')
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    uses: devsoliadata-creator/ai-dispatch/.github/workflows/cto-verdict.yml@main
+    with:
+      pull: "${{ github.event.issue.number }}"
+      comment_body: ${{ github.event.comment.body }}
+      author_association: ${{ github.event.comment.author_association }}
+    secrets: inherit
+
+  labels:
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      issues: write
+    uses: devsoliadata-creator/ai-dispatch/.github/workflows/labels.yml@main
