@@ -6,6 +6,8 @@
 #   cto status 55                      where issue #55 is: state, PR, CI, CTO verdict, last events
 #   cto list                           every open control issue across your repos, plus PRs waiting on you
 #   cto watch 55                       re-print status every 30 s until it needs you
+#   cto onboard owner/repo [--verify "npm test"] [--direct]   connect another repo (files, secret, labels, PR)
+#   cto repos                          list your repos and whether each is connected
 #
 # Config: ~/.cto/config -> CTO_OWNER, CTO_DEFAULT_REPO (owner/repo).
 set -euo pipefail
@@ -17,7 +19,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 
 field() { sed -n "s/^\*\*$1:\*\*[[:space:]]*//p" | head -1; }
 
-usage() { sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+usage() { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
 
 cmd_new() {
   local repo="$CTO_DEFAULT_REPO" desc="${1:-}"
@@ -82,8 +84,18 @@ cmd_watch() {
   done
 }
 
+cmd_repos() {
+  gh repo list "$CTO_OWNER" --limit 100 --no-archived --json nameWithOwner,isPrivate,pushedAt --jq '.[] | [.nameWithOwner, (if .isPrivate then "private" else "public" end), .pushedAt[:10]] | @tsv' \
+  | while IFS=$'\t' read -r r vis pushed; do
+      if gh api "repos/$r/contents/.github/workflows/ai-dispatch.yml" >/dev/null 2>&1; then st="connected"; else st="-"; fi
+      printf '  %-45s %-8s %s  %s\n' "$r" "$vis" "$pushed" "$st"
+    done
+}
+
 case "${1:-}" in
   new) shift; cmd_new "$@" ;;
+  onboard) shift; exec bash "$here/onboard-repo.sh" "$@" ;;
+  repos) cmd_repos ;;
   status|st) shift; cmd_status "$@" ;;
   list|ls) cmd_list ;;
   watch) shift; cmd_watch "$@" ;;
