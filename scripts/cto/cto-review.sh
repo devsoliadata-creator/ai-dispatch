@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# ChatGPT CTO review, run from the Mac: finds every open PR labeled
-# `cto:review` across the owner's repos, has Codex (signed in with the
-# ChatGPT account -- included on the Free plan) review the actual checkout,
-# and posts the verdict as a PR comment under the owner's GitHub login. The
-# repo's CTO-verdict workflow relays it to the control issue.
+# CTO review, run from the Mac: finds every open PR labeled `cto:review`
+# across the owner's repos, has the engine (Claude Code CLI on the Max plan by
+# default, or Codex) review the actual checkout with the CTO persona, and posts
+# the verdict as a PR comment under the owner's GitHub login. The repo's
+# CTO-verdict workflow relays it to the control issue.
 #
-# Requires: gh (logged in), codex (`codex login` done once), git.
+# Requires: gh (logged in), git, and the engine: claude (Claude Code CLI, Max plan; default) or codex.
 # Config (env or ~/.cto/config): CTO_OWNER, CTO_REPOS (space-separated
 # allow-list, empty = all), CTO_WORKDIR, CTO_PROMPT, CTO_MODEL.
 set -euo pipefail
@@ -17,6 +17,20 @@ CTO_REPOS="${CTO_REPOS:-}"
 CTO_WORKDIR="${CTO_WORKDIR:-$CTO_HOME/repos}"
 CTO_PROMPT="${CTO_PROMPT:-$(dirname "$0")/../../docs/CHATGPT-CTO-PROMPT.md}"
 CTO_MODEL="${CTO_MODEL:-}"
+
+# ---- engine: claude (default, Max plan) or codex. Set CTO_ENGINE in ~/.cto/config.
+CTO_ENGINE="${CTO_ENGINE:-claude}"
+run_engine() {  # run_engine <workdir> <outfile> <prompt> [--write]
+  local dir="$1" out="$2" prompt="$3" mode="${4:-}"
+  if [ "$CTO_ENGINE" = "codex" ]; then
+    local model_arg=(); [ -n "${CTO_MODEL:-}" ] && model_arg=(-m "$CTO_MODEL")
+    codex exec --sandbox read-only -C "$dir" --skip-git-repo-check ${model_arg[@]+"${model_arg[@]}"} -o "$out" "$prompt"
+  else
+    local tools="Read,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git status:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh issue view:*),Bash(cat:*),Bash(ls:*)"
+    local model_arg=(); [ -n "${CTO_MODEL:-}" ] && model_arg=(--model "$CTO_MODEL")
+    ( cd "$dir" && claude -p "$prompt" --output-format text --max-turns 60 --allowedTools "$tools" ${model_arg[@]+"${model_arg[@]}"} ) > "$out"
+  fi
+}
 LOCK="$CTO_HOME/review.lock"
 mkdir -p "$CTO_WORKDIR" "$CTO_HOME/log"
 
@@ -26,7 +40,7 @@ log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*"; }
 if ! mkdir "$LOCK" 2>/dev/null; then log "another run is active; exiting"; exit 0; fi
 trap 'rmdir "$LOCK"' EXIT
 
-for tool in gh codex git jq; do
+for tool in gh git jq "$CTO_ENGINE"; do
   command -v "$tool" >/dev/null || { log "missing $tool"; exit 1; }
 done
 
@@ -70,20 +84,18 @@ $(jq -r .body <<<"$pr")
 Produce the review exactly as the packet section of your instructions says: findings, then ONE verdict block last and nothing after it."
 
 out="$CTO_HOME/log/$(date +%Y%m%d-%H%M%S)-${repo#*/}-$number.md"
-  model_arg=(); [ -n "$CTO_MODEL" ] && model_arg=(-m "$CTO_MODEL")
-  if ! codex exec --sandbox read-only -C "$dir" --skip-git-repo-check ${model_arg[@]+"${model_arg[@]}"} \
-        -o "$out" "$prompt" >"$out.run" 2>&1; then
-    log "codex failed for $repo#$number (see $out.run)"; continue
+  if ! run_engine "$dir" "$out" "$prompt" 2>"$out.run"; then
+    log "$CTO_ENGINE failed for $repo#$number (see $out.run)"; continue
   fi
 
   # The verdict is the last `CTO:` line and everything after it.
   verdict="$(awk 'BEGIN{p=0} /^[[:space:]]*CTO:[[:space:]]*(APPROVE|REWORK|BLOCK)/{p=1; buf=""} p{buf=buf $0 "\n"} END{printf "%s", buf}' "$out")"
-  if [ -z "$verdict" ]; then log "no verdict block in Codex output for $repo#$number"; continue; fi
+  if [ -z "$verdict" ]; then log "no verdict block in $CTO_ENGINE output for $repo#$number"; continue; fi
   findings="$(awk '/^[[:space:]]*CTO:[[:space:]]*(APPROVE|REWORK|BLOCK)/{exit} {print}' "$out")"
 
   # Findings first (informational, does not trigger the relay), verdict second.
   if [ -n "$(tr -d '[:space:]' <<<"$findings")" ]; then
-    printf '🤖 **ChatGPT CTO review** (via Codex, %s)\n\n%s\n' "${head:0:7}" "$findings" | gh pr comment "$number" -R "$repo" --body-file -
+    printf '🤖 **CTO review** (via %s, %s)\n\n%s\n' "$CTO_ENGINE" "${head:0:7}" "$findings" | gh pr comment "$number" -R "$repo" --body-file -
   fi
   printf '%s' "$verdict" | gh pr comment "$number" -R "$repo" --body-file -
   log "posted verdict for $repo#$number: $(head -1 <<<"$verdict")"

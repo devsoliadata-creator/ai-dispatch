@@ -6,13 +6,13 @@ here="$(cd "$(dirname "$0")" && pwd)"
 CTO_HOME="$HOME/.cto"
 mkdir -p "$CTO_HOME/log"
 
-for tool in gh codex git jq; do
+for tool in gh claude git jq; do
   if ! command -v "$tool" >/dev/null; then
     echo "missing: $tool"
     case "$tool" in
-      gh)    echo "  brew install gh && gh auth login" ;;
-      codex) echo "  npm install -g @openai/codex && codex login   (sign in with ChatGPT)" ;;
-      jq)    echo "  brew install jq" ;;
+      gh)     echo "  brew install gh && gh auth login" ;;
+      claude) echo "  npm install -g @anthropic-ai/claude-code && claude   (log in with your Max account once)" ;;
+      jq)     echo "  brew install jq" ;;
     esac
     exit 1
   fi
@@ -25,7 +25,9 @@ CTO_OWNER=devsoliadata-creator
 # Optional space-separated allow-list of repo names; empty = every repo
 CTO_REPOS=""
 CTO_PROMPT="$here/../../docs/CHATGPT-CTO-PROMPT.md"
-# Optional Codex model override, e.g. gpt-5-codex
+# Engine for cto new / the reviewer: claude (Claude Code CLI on your Max plan) or codex
+CTO_ENGINE=claude
+# Optional model override for the engine (e.g. opus / sonnet, or a codex model)
 CTO_MODEL=""
 # Repo used by `cto new "..."` / `cto status N` when none is given
 CTO_DEFAULT_REPO=devsoliadata-creator/personal_assistant
@@ -35,7 +37,8 @@ chmod +x "$here"/*.sh "$here/cto"
 mkdir -p "$HOME/.local/bin" && ln -sf "$here/cto" "$HOME/.local/bin/cto"
 grep -q 'HOME/.local/bin' "$HOME/.zshrc" 2>/dev/null || printf '\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$HOME/.zshrc"
 
-codex_bin="$(dirname "$(command -v codex)")"
+claude_bin="$(dirname "$(command -v claude)")"
+codex_bin="$(dirname "$(command -v codex 2>/dev/null || echo /usr/bin/false)")"
 gh_bin="$(dirname "$(command -v gh)")"
 plist="$HOME/Library/LaunchAgents/com.soliadata.cto-review.plist"
 cat > "$plist" <<EOF
@@ -49,7 +52,7 @@ cat > "$plist" <<EOF
   <key>StandardOutPath</key><string>$CTO_HOME/log/review.log</string>
   <key>StandardErrorPath</key><string>$CTO_HOME/log/review.log</string>
   <key>EnvironmentVariables</key><dict>
-    <key>PATH</key><string>$codex_bin:$gh_bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>PATH</key><string>$claude_bin:$codex_bin:$gh_bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
   </dict>
 </dict></plist>
 EOF
