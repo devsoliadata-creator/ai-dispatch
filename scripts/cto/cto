@@ -15,7 +15,9 @@ CTO_HOME="${CTO_HOME:-$HOME/.cto}"
 [ -f "$CTO_HOME/config" ] && . "$CTO_HOME/config"
 CTO_OWNER="${CTO_OWNER:-devsoliadata-creator}"
 CTO_DEFAULT_REPO="${CTO_DEFAULT_REPO:-$CTO_OWNER/personal_assistant}"
-here="$(cd "$(dirname "$0")" && pwd)"
+# resolve the symlink ~/.local/bin/cto back to the real script directory
+self="$0"; [ -L "$self" ] && self="$(readlink "$self")"
+here="$(cd "$(dirname "$self")" && pwd)"
 
 field() { sed -n "s/^\*\*$1:\*\*[[:space:]]*//p" | head -1; }
 
