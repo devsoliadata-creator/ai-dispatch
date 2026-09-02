@@ -53,7 +53,7 @@ jobs:
     permissions:
       contents: read
       issues: write
-      pull-requests: read
+      pull-requests: write
     uses: devsoliadata-creator/ai-dispatch/.github/workflows/pr-sync.yml@main
     with:
       pull: "${{ github.event.pull_request.number }}"
