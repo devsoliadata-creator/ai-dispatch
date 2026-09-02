@@ -207,6 +207,40 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
     return 0
 
 
+PACKET_MARKER = "## CTO review packet"
+
+
+def _flag_for_cto(api: GitHub, pull_number: int) -> None:
+    api.ensure_label(REVIEW_LABEL, "e4e669", "Awaiting the CTO verdict")
+    api.ensure_label("cto:approved", "0e8a16", "CTO approved; owner merges")
+    api.add_labels(pull_number, [REVIEW_LABEL])
+    if any(PACKET_MARKER in (c.get("body") or "") for c in api.list_comments(pull_number)):
+        return
+    pull = api.get_pull(pull_number)
+    files = api.pull_files(pull_number)
+    listing = "\n".join(f"- {f.get('filename')} (+{f.get('additions', 0)}/-{f.get('deletions', 0)})" for f in files)
+    patches, size = [], 0
+    for f in files:
+        patch = f.get("patch")
+        if not patch:
+            continue
+        chunk = f"--- {f.get('filename')}\n{patch}\n"
+        if size + len(chunk) > 50000:
+            patches.append("_(diff truncated at 50 KB; open the PR for the rest)_")
+            break
+        patches.append(chunk); size += len(chunk)
+    body = (
+        f"{PACKET_MARKER}\n\n"
+        "Paste everything below this line into ChatGPT CTO, then post its verdict here as a comment "
+        "starting with `CTO: APPROVE`, `CTO: REWORK` or `CTO: BLOCK`.\n\n---\n\n"
+        f"# {pull.get('title', '')}\n\n{pull.get('html_url', '')}\n\n"
+        f"Branch: {pull.get('head', {}).get('ref', '')} -> {pull.get('base', {}).get('ref', '')}\n\n"
+        f"{pull.get('body') or ''}\n\n## Files changed\n\n{listing}\n\n## Diff\n\n```diff\n"
+        + "".join(patches) + "\n```\n"
+    )
+    api.create_comment(pull_number, body)
+
+
 def cmd_complete(args: argparse.Namespace) -> int:
     """The worker's explicit hand-back: In Progress -> Review."""
     api = GitHub()
@@ -222,8 +256,11 @@ def cmd_complete(args: argparse.Namespace) -> int:
     if outcome["action"] != "skip":
         _apply(api, args.issue, issue.get("body") or "", outcome, comment_id)
         if args.pull:
-            # Flag the PR for the CTO: the Mac review script polls this label.
-            api.add_labels(int(args.pull), [REVIEW_LABEL])
+            # A PR opened with the workflow token gets no pull_request run
+            # until a human approves it, so the hand-back does the CTO
+            # flagging itself: label (creating it if the repo lacks it) and
+            # the review packet the CTO reads.
+            _flag_for_cto(api, int(args.pull))
     _emit(outcome, args.out)
     return 0
 

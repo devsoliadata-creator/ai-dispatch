@@ -83,6 +83,15 @@ class GitHub:
         )
         return comment
 
+    def ensure_label(self, name: str, color: str, description: str) -> None:
+        """Create a repository label if it does not exist (422 = already there)."""
+        try:
+            self._request("POST", f"/repos/{self.repository}/labels",
+                          {"name": name, "color": color, "description": description})
+        except GitHubError as exc:
+            if "422" not in str(exc):
+                raise
+
     def add_labels(self, number: int, labels: list[str]) -> None:
         self._request("POST", f"/repos/{self.repository}/issues/{number}/labels", {"labels": labels})
 
@@ -97,6 +106,9 @@ class GitHub:
     def get_pull(self, number: int) -> dict:
         pull, _ = self._request("GET", f"/repos/{self.repository}/pulls/{number}")
         return pull
+
+    def pull_files(self, number: int) -> list[dict]:
+        return self._paginate(f"/repos/{self.repository}/pulls/{number}/files?per_page=100")
 
 
 def _next_link(link_header: str) -> str:

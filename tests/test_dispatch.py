@@ -624,12 +624,22 @@ class FakeGitHub:
     def add_labels(self, number, labels):
         self.labels_added = getattr(self, "labels_added", []) + [(number, list(labels))]
 
+    def ensure_label(self, name, color, description):
+        self.labels_ensured = getattr(self, "labels_ensured", []) + [name]
+
+    def get_pull(self, number):
+        return getattr(self, "pull", None) or {"number": number, "title": "t", "html_url": "u", "body": "b",
+                                               "head": {"ref": "claude/x"}, "base": {"ref": "main"}, "state": "open"}
+
+    def pull_files(self, number):
+        return [{"filename": "a.py", "additions": 1, "deletions": 0, "patch": "@@ -0,0 +1 @@\n+x"}]
+
     def remove_label(self, number, label):
         self.labels_removed = getattr(self, "labels_removed", []) + [(number, label)]
 
     def create_comment(self, number, body):
         self.calls.append(("create_comment", number))
-        self.comments.append({"id": 900 + len(self.comments), "body": body})
+        self.comments.append({"id": 900 + len(self.comments), "body": body, "number": number})
         return self.comments[-1]
 
     def update_comment(self, comment_id, body):
@@ -791,8 +801,9 @@ def test_completion_command_hands_the_feature_back(cli):
     cli(["complete", "--issue", "42", "--pull", "43"], api)
     status = parse_status(api.issue["body"])
     assert (status["State"], status["Next"], status["PR"]) == ("Review", "CTO review", "#43")
-    assert len(api.comments) == 1, "still one dispatch comment per feature"
-    assert parse_record(api.comments[0]["body"])["status"] == "released"
+    on_issue = [c for c in api.comments if c.get("number", 42) == 42]
+    assert len(on_issue) == 1, "still one dispatch comment per feature (the packet goes on the PR)"
+    assert parse_record(on_issue[0]["body"])["status"] == "released"
 
 
 def test_mission_tells_the_worker_how_to_hand_back():
@@ -1155,9 +1166,18 @@ def test_a_rework_free_mission_has_no_rework_section():
 
 
 def test_completion_flags_the_pull_request_for_the_cto(cli):
+    """Bot-opened PRs get no pull_request run without a human click, so the
+    hand-back itself labels the PR, creates the label if missing, and posts
+    the review packet."""
     api = FakeGitHub(_issue(body=issue_body(state="In Progress", nxt="Worker executing")))
     cli(["complete", "--issue", "42", "--pull", "43"], api)
     assert (43, ["cto:review"]) in api.labels_added
+    assert "cto:review" in api.labels_ensured
+    packets = [c for c in api.comments if "## CTO review packet" in c["body"]]
+    assert len(packets) == 1 and "a.py" in packets[0]["body"] and "+x" in packets[0]["body"]
+    # idempotent: a second hand-back does not post a second packet
+    cli(["complete", "--issue", "42", "--pull", "43"], api)
+    assert len([c for c in api.comments if "## CTO review packet" in c["body"]]) == 1
 
 
 def test_every_verdict_clears_the_review_flag_on_the_pr():
