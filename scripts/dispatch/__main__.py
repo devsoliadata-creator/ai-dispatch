@@ -2,9 +2,11 @@
 
     python -m scripts.dispatch decide      < snapshot.json   # pure, for tests
     python -m scripts.dispatch dispatch    --issue 42 [--force] --out decision.json
-    python -m scripts.dispatch mark-failed --issue 42 --blocker "..." --detail "..."
+    python -m scripts.dispatch reconcile   --issue 42 --worker-outcome success
     python -m scripts.dispatch complete    --issue 42 --pull 43
     python -m scripts.dispatch pr-sync     --pull 43
+    python -m scripts.dispatch ci-plan     --issue 42 --out target.json
+    python -m scripts.dispatch ci-result   --pull 43 --sha abc123 --conclusion failure
 
 ``decide`` and ``pr-sync`` reduce to pure functions in ``dispatcher``; the
 commands below are the thin shell that reads GitHub, calls one of them, and
@@ -21,12 +23,15 @@ from typing import Any
 
 from .dispatcher import (
     DISPATCH_MARKER,
+    ci_plan,
+    ci_result,
     completion,
     control_issue_from_pr,
     decide,
-    failure_record,
+    linked_pull,
     parse_record,
     pr_sync,
+    reconciliation,
     render_record,
 )
 from .github import GitHub, label_names
@@ -173,26 +178,32 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_mark_failed(args: argparse.Namespace) -> int:
-    """Turn an active claim into a truthful, recoverable Blocked state."""
+def cmd_reconcile(args: argparse.Namespace) -> int:
+    """Make the recorded state true now that the worker step has exited.
+
+    Exits non-zero when it has to block the feature: the missing hand-back is
+    the finding, and a green workflow run beside a Blocked feature would be
+    the same untruth in a different place.
+    """
     api = GitHub()
     issue = api.get_issue(args.issue)
     record, comment_id = _find_record(api, args.issue)
-    if not record or record.get("status") != "dispatched":
-        print("::notice title=Feature dispatch::no active claim to fail")
-        return 0
-    outcome = {
-        "action": "fail",
-        "reason": args.detail,
-        "status_updates": {
-            "State": "Blocked",
-            "Blocker": args.blocker,
-            "Next": "Retry dispatch",
-        },
-        "record": failure_record(record, args.detail, at=_now(), run_url=_run_url()),
-    }
-    _apply(api, args.issue, issue.get("body") or "", outcome, comment_id)
+    outcome = reconciliation(
+        {
+            "issue": {"number": args.issue, "body": issue.get("body") or ""},
+            "record": record,
+            "worker_outcome": args.worker_outcome,
+            "agent": args.agent,
+        }
+    )
+    if outcome.get("record"):
+        outcome["record"] = {**outcome["record"], "at": _now(), "run_url": _run_url()}
+    if outcome["action"] != "skip":
+        _apply(api, args.issue, issue.get("body") or "", outcome, comment_id)
     _emit(outcome, args.out)
+    if outcome["action"] == "fail":
+        print(f"::error title=Feature dispatch::{outcome['reason']}")
+        return 1
     return 0
 
 
@@ -287,6 +298,52 @@ def cmd_cto_verdict(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_ci_plan(args: argparse.Namespace) -> int:
+    """Name the exact commit the canonical CI run must validate."""
+    api = GitHub()
+    issue = api.get_issue(args.issue)
+    body = issue.get("body") or ""
+    number = linked_pull(body)
+    pull = api.get_pull(number) if number is not None else {}
+    plan = ci_plan({"issue": {"number": args.issue, "body": body}, "pull": pull})
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as handle:
+            json.dump(plan, handle)
+    if args.github_output:
+        with open(args.github_output, "a", encoding="utf-8") as handle:
+            for key in ("action", "sha", "ref", "pull"):
+                handle.write(f"ci_{key}={plan.get(key) or ''}\n")
+    print(f"::notice title=Feature dispatch::{plan['action']}: {plan['reason']}")
+    return 0
+
+
+def cmd_ci_result(args: argparse.Namespace) -> int:
+    """Record the canonical CI verdict on the feature the PR belongs to."""
+    api = GitHub()
+    pull = api.get_pull(args.pull)
+    issue_number = control_issue_from_pr(pull.get("body") or "")
+    if issue_number is None:
+        print("::notice title=Feature dispatch::pull request references no control issue")
+        return 0
+    issue = api.get_issue(issue_number)
+    record, comment_id = _find_record(api, issue_number)
+    outcome = ci_result(
+        {
+            "issue": {"number": issue_number, "body": issue.get("body") or ""},
+            "record": record,
+            "conclusion": args.conclusion,
+            "sha": args.sha,
+            "pull": args.pull,
+        }
+    )
+    if outcome.get("record"):
+        outcome["record"] = {**outcome["record"], "at": _now(), "run_url": _run_url()}
+    if outcome["action"] != "skip":
+        _apply(api, issue_number, issue.get("body") or "", outcome, comment_id)
+    _emit(outcome, args.out)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m scripts.dispatch")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -299,12 +356,31 @@ def build_parser() -> argparse.ArgumentParser:
     dispatch.add_argument("--out")
     dispatch.set_defaults(func=cmd_dispatch)
 
-    failed = sub.add_parser("mark-failed", help="record a failed worker invocation")
-    failed.add_argument("--issue", type=int, required=True)
-    failed.add_argument("--blocker", required=True)
-    failed.add_argument("--detail", required=True)
-    failed.add_argument("--out")
-    failed.set_defaults(func=cmd_mark_failed)
+    reconcile = sub.add_parser(
+        "reconcile", help="make the recorded state true once the worker step has exited"
+    )
+    reconcile.add_argument("--issue", type=int, required=True)
+    reconcile.add_argument(
+        "--worker-outcome",
+        default="",
+        help="what the invocation step did: success, failure, or empty for never ran",
+    )
+    reconcile.add_argument("--agent", default="", help="agent name, for the recorded wording")
+    reconcile.add_argument("--out")
+    reconcile.set_defaults(func=cmd_reconcile)
+
+    plan = sub.add_parser("ci-plan", help="name the commit canonical CI must validate")
+    plan.add_argument("--issue", type=int, required=True)
+    plan.add_argument("--out")
+    plan.add_argument("--github-output", default=os.environ.get("GITHUB_OUTPUT", ""))
+    plan.set_defaults(func=cmd_ci_plan)
+
+    result = sub.add_parser("ci-result", help="record a canonical CI verdict on the feature")
+    result.add_argument("--pull", type=int, required=True)
+    result.add_argument("--sha", default="")
+    result.add_argument("--conclusion", required=True)
+    result.add_argument("--out")
+    result.set_defaults(func=cmd_ci_result)
 
     complete = sub.add_parser("complete", help="worker hand-back: move the feature to Review")
     complete.add_argument("--issue", type=int, required=True)

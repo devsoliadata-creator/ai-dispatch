@@ -68,6 +68,11 @@ def render_record(record: dict[str, Any]) -> str:
         "dispatched": f"Dispatched to {agent} ({skill}).",
         "manual": f"{agent} has no automatic dispatch lane; {agent} dispatch is manual.",
         "failed": f"{agent} invocation failed. The feature is Blocked and can be re-dispatched.",
+        "abandoned": (
+            f"{agent} exited without handing the mission back. The feature is Blocked "
+            "and can be re-dispatched."
+        ),
+        "ci-failed": "Canonical CI failed on the implementation PR head.",
         "released": f"Dispatch to {agent} ({skill}) is complete; the claim is released.",
         "invalid": "Routing metadata is inconsistent; nothing was dispatched.",
     }.get(status, f"Dispatch record: {status}.")
@@ -357,6 +362,87 @@ def failure_record(record: dict[str, Any], detail: str, **extra: Any) -> dict[st
     return failed
 
 
+# ------------------------------------------------------ post-worker truthfulness
+
+#: What the workflow saw the worker invocation step do. Anything else -- an
+#: agent with no callable lane, a step that never ran -- is "not invoked".
+WORKER_SUCCEEDED = "success"
+WORKER_FAILED = "failure"
+
+
+def reconciliation(payload: dict[str, Any]) -> dict[str, Any]:
+    """Reconcile the recorded state with the fact that the worker has exited.
+
+    The invocation step finishing is not evidence that work is still running;
+    it is evidence that it is *not*. A worker signals completion explicitly
+    (``scripts.dispatch complete``), which releases the claim. So once the
+    step is over, an still-active claim means no hand-back happened, and the
+    only truthful state left is Blocked -- never an indefinite
+    "In Progress / Worker executing" with nobody executing.
+    """
+    issue = payload.get("issue") or {}
+    record = payload.get("record")
+    outcome = str(payload.get("worker_outcome") or "").strip().lower()
+    agent = (record or {}).get("agent") or payload.get("agent") or "The worker"
+
+    status = parse_status(issue.get("body") or "")
+    if status is None:
+        return _outcome("skip", "no `## Current status` block; not a feature control issue")
+
+    if not record or record.get("status") != ACTIVE_STATUS:
+        # The worker handed back (or the claim was already spent). Whatever
+        # Review/PR state that hand-back wrote is the truth; leave it alone.
+        return _outcome("skip", "the dispatch claim is already released; nothing to reconcile")
+
+    state = canonical(status["State"], STATES)
+    if state != "In Progress":
+        # Something else already moved the feature on while the claim stayed
+        # open. Spend the claim so it cannot outlive its mission, but do not
+        # rewrite a state this function did not author.
+        released = release(record, f"the worker exited with the feature in {state or 'an unknown state'}")
+        return _outcome(
+            "release",
+            f"state is {status['State'] or 'unset'}, not In Progress; releasing the stale claim",
+            agent=record.get("agent", ""),
+            skill=record.get("skill", ""),
+            claim_key=record.get("key", ""),
+            record=released,
+        )
+
+    if outcome == WORKER_SUCCEEDED:
+        blocker = f"{agent} exited without handing the mission back"
+        detail = (
+            f"The {agent} invocation finished, but the mission was never handed back with "
+            "`python3 -m scripts.dispatch complete`, so no implementation was reported ready. "
+            "The claim is released and the feature can be re-dispatched."
+        )
+        status_name = "abandoned"
+    elif outcome == WORKER_FAILED:
+        blocker = f"{agent} invocation failed"
+        detail = (
+            f"The {agent} invocation step failed. The workflow logs hold the detail; the "
+            "feature is recoverable and can be re-dispatched."
+        )
+        status_name = "failed"
+    else:
+        blocker = f"{agent} invocation failed"
+        detail = (
+            f"No {agent} invocation ran in this repository, so no worker is executing. "
+            f"Re-dispatch once a callable {agent} lane is configured."
+        )
+        status_name = "failed"
+
+    return _outcome(
+        "fail",
+        detail,
+        agent=record.get("agent", ""),
+        skill=record.get("skill", ""),
+        claim_key=record.get("key", ""),
+        status_updates={"State": "Blocked", "Blocker": blocker, "Next": "Retry dispatch"},
+        record=failure_record(record, detail, status=status_name),
+    )
+
+
 # --------------------------------------------------------------- PR linking
 
 #: The PR template's own line comes first; the GitHub closing keywords are
@@ -424,6 +510,128 @@ def pr_sync(payload: dict[str, Any]) -> dict[str, Any]:
         f"synchronising the control issue with pull request {reference}",
         status_updates=updates,
         record=new_record,
+    )
+
+
+# ------------------------------------------------------------- canonical CI
+
+#: The one status context the canonical run publishes on a worker PR head.
+#: Distinct from the check GitHub creates for a `pull_request`-triggered run,
+#: so the two can never be mistaken for each other.
+CI_STATUS_CONTEXT = "canonical-ci"
+
+_PR_FIELD_RE = re.compile(r"#(\d+)")
+
+
+def linked_pull(body: str) -> int | None:
+    """The one implementation pull request a control issue records, if any."""
+    status = parse_status(body or "")
+    if status is None:
+        return None
+    match = _PR_FIELD_RE.search(status.get("PR") or "")
+    return int(match.group(1)) if match else None
+
+
+def ci_plan(payload: dict[str, Any]) -> dict[str, Any]:
+    """Which exact commit, if any, needs a canonical CI run dispatched.
+
+    A pull request opened or pushed by the workflow's own ``GITHUB_TOKEN``
+    does not start a ``pull_request`` run, so a worker PR head would sit
+    without the one gate this repository trusts. The answer is the head SHA
+    itself -- never "the branch", which can move under a queued run.
+    """
+    issue = payload.get("issue") or {}
+    pull = payload.get("pull") or {}
+
+    number = linked_pull(issue.get("body") or "")
+    if number is None:
+        return {
+            "action": "skip",
+            "reason": "no implementation pull request is linked; nothing to validate",
+            "sha": "",
+            "ref": "",
+            "pull": 0,
+        }
+
+    head = pull.get("head") or {}
+    sha = str(head.get("sha") or "")
+    if (pull.get("state") or "open").lower() != "open" or pull.get("merged"):
+        return {
+            "action": "skip",
+            "reason": f"pull request #{number} is not open; nothing to validate",
+            "sha": "",
+            "ref": "",
+            "pull": number,
+        }
+    if not sha:
+        return {
+            "action": "skip",
+            "reason": f"pull request #{number} reports no head commit",
+            "sha": "",
+            "ref": "",
+            "pull": number,
+        }
+    return {
+        "action": "ci",
+        "reason": f"dispatching canonical CI for pull request #{number} at {sha[:7]}",
+        "sha": sha,
+        "ref": str(head.get("ref") or ""),
+        "pull": number,
+    }
+
+
+def ci_result(payload: dict[str, Any]) -> dict[str, Any]:
+    """Record the canonical CI verdict for a worker PR head on its feature.
+
+    A green run needs no words: the commit status on the head SHA is the
+    durable evidence. A red one must be impossible to miss, so it takes the
+    feature out of Review and back to Blocked -- an implementation whose
+    canonical gate is failing is not ready for CTO review or for merge.
+    """
+    issue = payload.get("issue") or {}
+    record = payload.get("record")
+    conclusion = str(payload.get("conclusion") or "").strip().lower()
+    sha = str(payload.get("sha") or "")
+    number = int(payload.get("pull") or 0)
+    short = sha[:7] or "the PR head"
+
+    status = parse_status(issue.get("body") or "")
+    if status is None:
+        return _outcome("skip", "no `## Current status` block; not a feature control issue")
+
+    if conclusion == "success":
+        return _outcome("skip", f"canonical CI passed on {short}; nothing to record")
+
+    state = canonical(status["State"], STATES)
+    if state not in {"In Progress", "Review"}:
+        # Blocked already says something truthful, and Done is ChatGPT CTO's
+        # word. Neither is automation's to overwrite from a CI run.
+        return _outcome(
+            "skip",
+            f"state is {status['State'] or 'unset'}; leaving it as recorded",
+        )
+
+    detail = (
+        f"Canonical CI failed on {short}, the head of pull request #{number}. "
+        "The implementation is not ready for review or merge until "
+        "`python3 scripts/validate.py` passes on the PR head."
+    )
+    updated = None
+    if record:
+        updated = dict(record)
+        updated.update({"status": "ci-failed", "detail": detail})
+    return _outcome(
+        "fail",
+        detail,
+        agent=(record or {}).get("agent", ""),
+        skill=(record or {}).get("skill", ""),
+        claim_key=(record or {}).get("key", ""),
+        status_updates={
+            "State": "Blocked",
+            "Blocker": f"Canonical CI failed on {short}",
+            "Next": "Retry dispatch",
+        },
+        record=updated,
     )
 
 

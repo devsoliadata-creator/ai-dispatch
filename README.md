@@ -14,6 +14,7 @@ recorded assignments (see `docs/AUTOMATED-DISPATCH.md` for every rule).
 | `.github/workflows/pr-sync.yml` | reusable: keep the control issue's PR/State in sync; post the CTO review packet |
 | `.github/workflows/cto-verdict.yml` | reusable: relay a pasted `CTO:` verdict to the control issue |
 | `.github/workflows/labels.yml` | reusable: create the `agent:*` / `skill:*` labels |
+| `.github/workflows/ci-report.yml` | reusable: publish a dispatched CI run's verdict (commit status + control issue) |
 | `scripts/dispatch/` | all routing, validation, idempotency rules (stdlib only) |
 | `.agents/skills/<skill>/SKILL.md` | default skill definitions incl. worker model / effort / access |
 | `agents/*.md` | default sub-agents copied into a repo's `.claude/agents/` when it has none |
@@ -25,6 +26,11 @@ recorded assignments (see `docs/AUTOMATED-DISPATCH.md` for every rule).
 
 1. Copy `templates/caller/.github/workflows/ai-dispatch.yml` into the repo and
    set `verify_command` to its one test entry point (or leave `""`).
+   Copy `templates/caller/.github/workflows/ci.yml` too (or add its
+   `workflow_dispatch` inputs, SHA check and `report` job to your existing CI):
+   a PR opened by the worker gets no `pull_request` run, so dispatch triggers
+   this CI on the exact head SHA and it reports back as the `canonical-ci`
+   status. Set `ci_workflow: ""` in the caller to skip that gate.
 2. Copy `templates/caller/.github/ISSUE_TEMPLATE/feature.md`,
    `templates/caller/.github/pull_request_template.md`, and
    `templates/caller/AGENTS.md` (edit AGENTS.md if the repo has extra rules).

@@ -29,6 +29,10 @@ on:
         description: "Git ref of the dispatch layer to run"
         type: string
         default: main
+      ci_workflow:
+        description: "The caller's CI workflow file to dispatch on a worker PR head (must accept `sha` and `pull` inputs; see templates/caller/.github/workflows/ci.yml). Empty = no canonical CI gate."
+        type: string
+        default: ci.yml
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: false
@@ -41,6 +45,13 @@ on:
 jobs:
   dispatch:
     runs-on: ubuntu-latest
+    outputs:
+      # Read after the worker has exited, so they describe the commit the
+      # worker actually left behind. Consumed by the canonical-ci job below,
+      # which is the only job in this file holding `actions: write`.
+      ci_action: ${{ steps.ci.outputs.ci_action }}
+      ci_sha: ${{ steps.ci.outputs.ci_sha }}
+      ci_pull: ${{ steps.ci.outputs.ci_pull }}
     permissions:
       contents: write
       issues: write
@@ -138,24 +149,54 @@ jobs:
           claude_args: ${{ steps.decide.outputs.claude_args }}
           settings: ${{ steps.decide.outputs.claude_settings }}
 
-      - name: Record the invocation outcome
+      # Which pull request head, if any, still needs the canonical gate. Read
+      # before the reconcile step below, because that step exits non-zero when
+      # it has to block the feature and this answer is wanted either way.
+      - name: Name the commit canonical CI must validate
+        id: ci
+        if: always() && steps.decide.outputs.action == 'dispatch'
+        run: python -P -m scripts.dispatch ci-plan --issue "$ISSUE"
+
+      # Truthfulness gate. The worker step finishing is evidence that no
+      # worker is running any more, not that one still is: a hand-back is
+      # explicit (`scripts.dispatch complete`) and releases the claim. A claim
+      # still open here becomes Blocked with a one-line blocker and a released
+      # claim; a hand-back that did happen is left exactly as the worker left it.
+      - name: Reconcile the recorded state with the worker's exit
         if: always() && steps.decide.outputs.action == 'dispatch'
         env:
           AGENT: ${{ steps.decide.outputs.agent }}
           CLAUDE_OUTCOME: ${{ steps.claude.outcome }}
         run: |
-          if [ "$AGENT" = "Claude" ] && [ "$CLAUDE_OUTCOME" = "success" ]; then
-            echo "::notice title=Feature dispatch::$AGENT invoked; the feature stays In Progress."
-            exit 0
-          fi
-          if [ "$AGENT" = "Claude" ] && [ "$CLAUDE_OUTCOME" = "failure" ]; then
-            detail="The $AGENT invocation step failed. The workflow logs hold the detail; the feature is recoverable and can be re-dispatched."
-          else
-            detail="No $AGENT invocation ran in this repository, so no worker is executing. Re-dispatch once a callable $AGENT lane is configured."
-          fi
-          python -P -m scripts.dispatch mark-failed \
+          python -P -m scripts.dispatch reconcile \
             --issue "$ISSUE" \
-            --blocker "$AGENT invocation failed" \
-            --detail "$detail"
-          echo "::error title=Feature dispatch::$detail"
-          exit 1
+            --agent "$AGENT" \
+            --worker-outcome "$CLAUDE_OUTCOME"
+
+  # The canonical-CI lane, deliberately a separate job. A pull request opened
+  # or pushed by this workflow's GITHUB_TOKEN starts no `pull_request` run, so
+  # a worker PR head would otherwise carry no gate. `workflow_dispatch` is the
+  # GitHub-native exception -- and it needs `actions: write`, which the job
+  # holding the Anthropic credential must never have. This job runs no
+  # repository code and holds nothing else.
+  canonical-ci:
+    needs: dispatch
+    if: always() && needs.dispatch.outputs.ci_action == 'ci' && inputs.ci_workflow != ''
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Dispatch canonical CI for the worker PR head
+        env:
+          SHA: ${{ needs.dispatch.outputs.ci_sha }}
+          PULL: ${{ needs.dispatch.outputs.ci_pull }}
+          CI_WORKFLOW: ${{ inputs.ci_workflow }}
+          # The workflow file that runs is always the default branch's, never
+          # the head's: the head is worker-authored, and CI is what judges it.
+          BASE: ${{ github.event.repository.default_branch }}
+        run: |
+          gh workflow run "$CI_WORKFLOW" --ref "$BASE" -f sha="$SHA" -f pull="$PULL"
+          echo "::notice title=Canonical CI::dispatched for pull request #$PULL at $SHA"

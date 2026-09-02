@@ -1,0 +1,74 @@
+name: Canonical CI report (reusable)
+
+# Publishes a dispatched CI run's verdict: a `canonical-ci` commit status on
+# the exact head SHA and a truthful record on the feature control issue. It
+# never checks out the caller's head -- it holds write scopes, and
+# worker-authored code must not run under them.
+
+on:
+  workflow_call:
+    inputs:
+      sha:
+        required: true
+        type: string
+      pull:
+        required: false
+        type: string
+        default: ""
+      conclusion:
+        description: "Result of the caller's validate job (needs.validate.result)"
+        required: true
+        type: string
+      dispatch_repo:
+        type: string
+        default: devsoliadata-creator/ai-dispatch
+      dispatch_ref:
+        type: string
+        default: main
+    secrets:
+      DISPATCH_REPO_TOKEN:
+        required: false
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      statuses: write
+      issues: write
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PYTHONPATH: ${{ github.workspace }}/.ai-dispatch
+      SHA: ${{ inputs.sha }}
+      PULL: ${{ inputs.pull }}
+      CONCLUSION: ${{ inputs.conclusion }}
+    steps:
+      - name: Check out the shared dispatch layer
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.dispatch_repo }}
+          ref: ${{ inputs.dispatch_ref }}
+          path: .ai-dispatch
+          token: ${{ secrets.DISPATCH_REPO_TOKEN || github.token }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Publish the commit status
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          state=failure
+          description="verify command failed on this commit"
+          if [ "$CONCLUSION" = "success" ]; then
+            state=success
+            description="verify command passed on this commit"
+          fi
+          gh api "repos/${{ github.repository }}/statuses/$SHA" \
+            -f state="$state" -f context="canonical-ci" \
+            -f description="$description" -f target_url="$RUN_URL"
+      - name: Record the verdict on the feature
+        if: env.PULL != ''
+        run: |
+          python -P -m scripts.dispatch ci-result \
+            --pull "$PULL" --sha "$SHA" --conclusion "$CONCLUSION"

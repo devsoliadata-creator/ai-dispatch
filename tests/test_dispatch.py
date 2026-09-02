@@ -497,7 +497,7 @@ def test_cli_exposes_the_commands_the_workflows_call():
     from scripts.dispatch.__main__ import build_parser
 
     parser = build_parser()
-    for command in ("decide", "dispatch", "mark-failed", "pr-sync"):
+    for command in ("decide", "dispatch", "reconcile", "pr-sync", "ci-plan", "ci-result"):
         assert parser.parse_args([command, *_required_args(command)]).command == command
 
 
@@ -505,8 +505,10 @@ def _required_args(command):
     return {
         "decide": [],
         "dispatch": ["--issue", "42"],
-        "mark-failed": ["--issue", "42", "--blocker", "b", "--detail", "d"],
+        "reconcile": ["--issue", "42"],
         "pr-sync": ["--pull", "43"],
+        "ci-plan": ["--issue", "42"],
+        "ci-result": ["--pull", "43", "--conclusion", "failure"],
     }[command]
 
 
@@ -646,12 +648,12 @@ def cli(monkeypatch):
     """Run a dispatch command against a FakeGitHub and return it."""
     from scripts.dispatch import __main__ as main_module
 
-    def _run(argv, api):
+    def _run(argv, api, expect=0):
         monkeypatch.setattr(main_module, "GitHub", lambda *a, **k: api)
         monkeypatch.setenv("LANE_CLAUDE", "automatic")
         monkeypatch.setenv("LANE_CODEX", "manual")
         monkeypatch.setenv("LANE_LOCAL", "manual")
-        assert main_module.main(["prog", *argv]) == 0
+        assert main_module.main(["prog", *argv]) == expect
         return api
 
     return _run
@@ -695,8 +697,8 @@ def test_dispatch_command_claims_before_it_returns(cli, tmp_path):
 def test_dispatch_command_updates_the_one_record_comment_in_place(cli):
     api = FakeGitHub(_issue())
     cli(["dispatch", "--issue", "42"], api)
-    cli(["mark-failed", "--issue", "42", "--blocker", "Claude invocation failed",
-         "--detail", "The Claude invocation step failed."], api)
+    cli(["reconcile", "--issue", "42", "--agent", "Claude",
+         "--worker-outcome", "failure"], api, expect=1)
 
     assert len(api.comments) == 1, "one dispatch comment per feature, rewritten in place"
     assert parse_record(api.comments[0]["body"])["status"] == "failed"
@@ -707,9 +709,9 @@ def test_dispatch_command_updates_the_one_record_comment_in_place(cli):
     assert "Traceback" not in api.issue["body"]
 
 
-def test_mark_failed_without_an_active_claim_changes_nothing(cli):
+def test_reconcile_without_an_active_claim_changes_nothing(cli):
     api = FakeGitHub(_issue())
-    cli(["mark-failed", "--issue", "42", "--blocker", "b", "--detail", "d"], api)
+    cli(["reconcile", "--issue", "42", "--worker-outcome", "failure"], api)
     assert parse_status(api.issue["body"])["State"] == "Ready"
     assert api.comments == []
 

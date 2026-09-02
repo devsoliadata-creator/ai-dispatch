@@ -11,15 +11,20 @@ ChatGPT CTO already recorded in the feature control issue.
 """
 
 from .dispatcher import (
+    CI_STATUS_CONTEXT,
     DISPATCH_MARKER,
     LANE_AUTOMATIC,
     LANE_MANUAL,
+    ci_plan,
+    ci_result,
     completion,
     control_issue_from_pr,
     decide,
     failure_record,
+    linked_pull,
     parse_record,
     pr_sync,
+    reconciliation,
     release,
     render_record,
 )
@@ -48,6 +53,7 @@ from .status import (
 
 __all__ = [
     "AGENTS",
+    "CI_STATUS_CONTEXT",
     "DISPATCH_MARKER",
     "EFFORTS",
     "FIELDS",
@@ -58,10 +64,14 @@ __all__ = [
     "SKILLS",
     "STATES",
     "apply_status",
+    "ci_plan",
+    "ci_result",
     "completion",
     "control_issue_from_pr",
     "failure_record",
+    "linked_pull",
     "pr_sync",
+    "reconciliation",
     "allowed_tools",
     "build_mission",
     "claude_args",

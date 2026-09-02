@@ -38,7 +38,7 @@ so on the issue — it never reports a worker as executing when none is.
 
 Codex and Local keep the full routing contract. Set the repository variable
 `CODEX_DISPATCH_LANE` or `LOCAL_DISPATCH_LANE` to `automatic` **only after**
-adding a real invocation step to `.github/workflows/feature-dispatch.yml`.
+adding a real invocation step to `.github/workflows/dispatch.yml (shared)`.
 Flipping the variable without the step is caught: the run marks the feature
 `Blocked` with `Blocker: <Agent> invocation failed` instead of leaving it
 looking dispatched.
@@ -164,8 +164,9 @@ One `Ready` assignment produces one dispatch. Three mechanisms, in order:
    parsed is treated as *held*, never as absent.
 
 A claim is spent — and the same assignment may dispatch again — when it is
-`released` (the feature reached Review/Blocked/Done, normal rework) or
-`failed` (the invocation failed). A deliberate retry of an assignment whose
+`released` (the feature reached Review/Blocked/Done, normal rework), `failed`
+(the invocation failed), `abandoned` (the worker exited without handing the
+mission back) or `ci-failed`. A deliberate retry of an assignment whose
 claim is still active goes through **Actions → Feature dispatch → Run
 workflow** with `force: true`.
 
@@ -179,17 +180,33 @@ the claim is released the normal way (the feature reaches Review, Blocked or
 Done), or the dispatch is re-run manually with `force: true` because someone
 has decided the previous worker is gone.
 
-## Failure
+## After the worker exits
 
-An invocation that does not run, or fails, writes:
+The invocation step finishing is evidence that no worker is running any more,
+not that one still is. So once it is over, `dispatch.yml (shared)` runs:
 
-```markdown
-**State:** Blocked
-**Blocker:** Claude invocation failed
-**Next:** Retry dispatch
+```bash
+python3 -m scripts.dispatch reconcile --issue <n> --worker-outcome <success|failure|>
 ```
 
-One short blocker. Stack traces and logs stay in the workflow run.
+which compares what is recorded with what is now true:
+
+| What the claim says | What is written |
+|---|---|
+| already released (the worker handed back) | nothing — `Review` and the linked PR stand |
+| still `dispatched`, invocation succeeded | `Blocked` / `<agent> exited without handing the mission back` |
+| still `dispatched`, invocation failed | `Blocked` / `<agent> invocation failed` |
+| still `dispatched`, no invocation ran | `Blocked` / `<agent> invocation failed`, saying no lane ran |
+| still `dispatched`, feature already moved on | the stale claim is released; the state is left alone |
+
+Every blocking outcome is one short line, with `Next: Retry dispatch`, and
+spends the claim so a deliberate re-dispatch works. Stack traces and logs stay
+in the workflow run. The step exits non-zero when it has to block a feature: a
+green workflow run beside a stalled feature would be the same untruth in a
+different place.
+
+A feature therefore cannot sit at `In Progress / Worker executing` with nobody
+executing.
 
 ## Completion
 
@@ -206,14 +223,14 @@ if the command is not available to it. It never sets `Done`.
 
 This is deliberate rather than inferred. Rework happens on an already-open,
 non-draft PR, where a push while the worker is mid-change looks exactly like
-a push that finishes the work — so `feature-pr-sync.yml` does not listen to
+a push that finishes the work — so `pr-sync.yml (shared)` does not listen to
 `synchronize` at all, and no push is read as a completion signal. Without the
 explicit hand-back a reworked feature would sit at `In Progress / Worker
 executing` forever.
 
 ## PR linking
 
-`feature-pr-sync.yml` reads `Control issue: #<n>` from the PR body (the
+`pr-sync.yml (shared)` reads `Control issue: #<n>` from the PR body (the
 repository PR template already carries that line; GitHub closing keywords are
 accepted as a fallback) and keeps `**PR:** #<n>` current. When the PR is open
 and out of draft while the feature is `In Progress`, the feature moves to
@@ -222,20 +239,63 @@ and out of draft while the feature is `In Progress`, the feature moves to
 The automation never marks a feature `Done`, never opens an issue from a PR,
 and never creates a second PR.
 
+## Canonical CI on a worker pull request head
+
+A pull request opened or pushed by a workflow's own `GITHUB_TOKEN` starts no
+`pull_request` run. Left alone, a worker-produced head would carry no gate at
+all — so "canonical CI is green" would be unverifiable exactly where it
+matters most. `workflow_dispatch` is GitHub's supported exception, and
+`ci.yml` accepts it:
+
+1. After the worker exits, `ci-plan` reads the feature's one linked PR and
+   reports its **exact head SHA** — never the branch, which can move under a
+   queued run.
+2. A separate `canonical-ci` job runs `gh workflow run ci.yml --ref <default
+   branch> -f sha=<head> -f pull=<n>`. It is a separate job because triggering
+   a workflow needs `actions: write`, and the job holding the Anthropic
+   credential must never be able to start arbitrary workflows. `--ref` is the
+   default branch, so the workflow file that runs is this repository's, never
+   the head's.
+3. `ci.yml` checks out that exact commit, proves it did, and runs
+   `python scripts/validate.py`. That job holds no write scope and no secret:
+   it executes worker-authored tests.
+4. A separate `report` job — which never checks out the head — publishes a
+   `canonical-ci` commit status on the head SHA, so the verdict is visible on
+   the PR and a red one is what a reviewer or a branch-protection rule sees.
+   On failure it also runs `ci-result`, which moves the feature to `Blocked`
+   with `Canonical CI failed on <sha>` while keeping the PR linked. A passing
+   run says nothing beyond the green status; a feature in `Review` stays there
+   for ChatGPT CTO.
+
+`ci-result` never overwrites a state it did not author: `Done` is the CTO's
+word, and an existing `Blocked` already says something truthful.
+
+Permission map:
+
+| Job | Permissions | Runs worker code? |
+|---|---|---|
+| `feature-dispatch / dispatch` (worker) | `contents`, `issues`, `pull-requests`, `id-token` write | yes |
+| `feature-dispatch / canonical-ci` | `actions: write` only | no — no checkout |
+| `ci / validate` | `contents: read` | yes |
+| `ci / report` | `contents: read`, `statuses: write`, `issues: write` | no — base branch only |
+
 ## Files
 
 | File | Role |
 |---|---|
-| `.github/workflows/feature-dispatch.yml` | Trigger, concurrency, worker invocation steps |
-| `.github/workflows/feature-pr-sync.yml` | PR ⇄ control issue synchronisation |
+| `.github/workflows/dispatch.yml (shared)` | Trigger, concurrency, worker invocation, post-worker reconciliation, canonical-CI dispatch |
+| `.github/workflows/ci.yml` | The canonical gate, on a PR, a push, or an exact worker head SHA |
+| `.github/workflows/pr-sync.yml (shared)` | PR ⇄ control issue synchronisation |
 | `.github/workflows/queue-bootstrap.yml` | Creates the `agent:*` / `skill:*` labels |
 | `scripts/dispatch/status.py` | The `## Current status` block: parse and rewrite in place |
 | `scripts/dispatch/mission.py` | The compact mission a worker receives |
 | `scripts/dispatch/routing.py` | Reads each skill's `worker-model` / `worker-effort` / `worker-access`; builds the worker's tool permissions |
-| `scripts/dispatch/dispatcher.py` | Every routing, validation, claim and PR-sync rule |
+| `scripts/dispatch/dispatcher.py` | Every routing, validation, claim, reconciliation, PR-sync and CI rule |
+| `scripts/dispatch/workflows.py` | Reads job/permission structure out of a workflow file, so the worker/CI split is checked, not described |
 | `scripts/dispatch/github.py` | The six REST calls this layer makes |
 | `scripts/dispatch/__main__.py` | The commands the workflows and workers run |
-| `tests/test_dispatch.py` | The proof, run by `python3 scripts/validate.py` |
+| `tests/test_dispatch.py` | Who may be dispatched — the proof, run by `python3 scripts/validate.py` |
+| `tests/test_dispatch_lifecycle.py` | What is true after the worker exits: hand-back, missing hand-back, canonical CI |
 
 There is no dispatcher service, no database, no queue and no scheduler. The
 rules are pure functions; the workflows gather state and apply the answer.

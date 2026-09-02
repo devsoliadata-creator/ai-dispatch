@@ -1,0 +1,66 @@
+name: CI
+
+# Runs on every push/PR, and -- via workflow_dispatch -- on the exact head
+# SHA of a worker-produced pull request (a PR opened by a workflow's own
+# GITHUB_TOKEN starts no pull_request run). AI dispatch always calls it on
+# the default branch, so this file is the one that runs.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Exact commit to validate (a worker pull request head)"
+        required: false
+        type: string
+      pull:
+        description: "Pull request the commit belongs to, for reporting"
+        required: false
+        type: string
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ inputs.sha || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Executes possibly worker-authored code, so it holds nothing: no write
+  # scope, no secret.
+  validate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha }}
+      - name: Confirm the checked-out commit
+        if: inputs.sha != ''
+        env:
+          SHA: ${{ inputs.sha }}
+        run: |
+          actual="$(git rev-parse HEAD)"
+          if [ "$actual" != "$SHA" ]; then
+            echo "::error title=CI::asked to validate $SHA but checked out $actual"
+            exit 1
+          fi
+      # REPLACE with this repo's setup + verify command (same one as verify_command in ai-dispatch.yml)
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python3 scripts/validate.py
+
+  report:
+    needs: validate
+    if: always() && github.event_name == 'workflow_dispatch' && inputs.sha != ''
+    permissions:
+      contents: read
+      statuses: write
+      issues: write
+    uses: devsoliadata-creator/ai-dispatch/.github/workflows/ci-report.yml@main
+    with:
+      sha: ${{ inputs.sha }}
+      pull: ${{ inputs.pull }}
+      conclusion: ${{ needs.validate.result }}
+    secrets: inherit
