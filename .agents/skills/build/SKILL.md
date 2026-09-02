@@ -8,7 +8,7 @@ metadata:
   worker-model: opus
   worker-effort: medium
   worker-access: write
-  worker-max-turns: 80
+  worker-max-turns: 150
 ---
 
 # Build

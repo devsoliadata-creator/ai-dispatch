@@ -906,7 +906,7 @@ def test_review_worker_is_read_only_and_build_worker_can_ship():
     """Review missions are read-only by default; Build must be able to push its PR."""
     review = allowed_tools(read_worker_routing("Review", ROOT))
     build = allowed_tools(read_worker_routing("Build", ROOT))
-    for tool in ("Edit", "Write", "Bash(git push:*)", "Bash(git commit:*)", "Bash(gh pr create:*)"):
+    for tool in ("Edit", "Write", "Bash(git:*)", "Bash(gh pr create:*)"):
         assert tool not in review, tool
         assert tool in build, tool
     for tool in ("Read", "Bash(git diff:*)", "Bash(gh pr review:*)", "Bash(python3 -m pytest:*)",
@@ -936,8 +936,9 @@ _ESCAPE_HATCHES = (
     # package managers: mutating, run install hooks, fetch from the network
     "Bash(pip:*)", "Bash(pip3:*)", "Bash(pip install:*)", "Bash(pip3 install:*)",
     "Bash(python3 -m pip:*)", "Bash(uv:*)", "Bash(npm:*)", "Bash(npx:*)", "Bash(bun:*)",
-    # tools with a "run this command" flag: sed e, find -exec, rg --pre, rebase --exec
-    "Bash(sed:*)", "Bash(awk:*)", "Bash(find:*)", "Bash(rg:*)", "Bash(git rebase:*)", "Bash(git -c:*)",
+    # in-place edits and command-running flags stay denied even though the
+    # tools themselves are allowed for reading
+    "Bash(sed -i:*)", "Bash(find * -exec:*)", "Bash(git -c:*)",
 )
 
 
@@ -966,8 +967,9 @@ def test_no_profile_has_a_general_interpreter_or_package_manager_escape():
         # and the interpreters/package managers are denied explicitly, which
         # in Claude Code wins over any allow rule
         for denied in ("Bash(python3 -c:*)", "Bash(pip:*)", "Bash(pip3:*)", "Bash(node:*)",
-                       "Bash(bash:*)", "Bash(sh:*)", "Bash(sed:*)", "Bash(find:*)",
-                       "Bash(git rebase:*)", "Write(.git/**)", "Edit(.git/**)"):
+                       "Bash(bash:*)", "Bash(sh:*)", "Bash(sed -i:*)", "Bash(find * -exec:*)",
+                       "Bash(git -c:*)", "Bash(git push --force:*)", "Bash(git push origin main:*)",
+                       "Write(.git/**)", "Edit(.git/**)", "Write(.github/workflows/**)"):
             assert denied in deny, (skill, denied)
 
 
@@ -976,8 +978,8 @@ def test_read_only_profile_cannot_install_or_mutate():
     for tool in review:
         assert "install" not in tool, tool
         assert not tool.startswith(("Edit", "Write", "MultiEdit", "NotebookEdit")), tool
-        assert not tool.startswith(("Bash(git add", "Bash(git commit", "Bash(git push",
-                                    "Bash(gh pr create", "Bash(mkdir", "Bash(mv", "Bash(cp")), tool
+        assert not tool.startswith(("Bash(git:", "Bash(git add", "Bash(git commit", "Bash(git push",
+                                    "Bash(gh pr create", "Bash(mkdir", "Bash(mv", "Bash(cp", "Bash(rm")), tool
 
 
 def test_dispatch_decision_carries_the_worker_for_that_skill():
@@ -1000,7 +1002,7 @@ def test_dispatch_command_hands_the_worker_its_model_and_effort(cli, tmp_path):
     decision = json.loads(out.read_text())
     assert {k: decision["worker"][k] for k in ("model", "effort", "access")} == {"model": "opus", "effort": "high", "access": "write"}
     assert decision["claude_args"].startswith("--model opus --effort high")
-    assert "Bash(git push:*)" in decision["claude_settings"]["permissions"]["allow"]
+    assert "Bash(git:*)" in decision["claude_settings"]["permissions"]["allow"]
     # The routing is not a secret and does not travel in the record comment.
     assert "--model" not in api.comments[0]["body"]
 
@@ -1177,3 +1179,17 @@ def test_missions_forbid_blind_retry_loops():
     routing = read_all_worker_routing(ROOT)
     mission = decide(snapshot(worker_routing=routing))["mission"]
     assert "Do not loop" in mission and "fails twice" in mission
+
+
+def test_workers_can_do_real_git_work_but_never_the_dangerous_verbs():
+    """Run 33594594425: 18 denials, all legitimate git (cherry-pick, merge, format-patch, apply)."""
+    build = claude_settings(read_worker_routing("Build", ROOT))
+    assert "Bash(git:*)" in build["permissions"]["allow"]
+    for tool in ("Bash(find:*)", "Bash(sed:*)", "Bash(awk:*)", "Bash(echo:*)", "Bash(rm:*)"):
+        assert tool in build["permissions"]["allow"], tool
+    for guard in ("Bash(git push --force:*)", "Bash(git push origin main:*)", "Bash(git push --delete:*)",
+                  "Bash(git remote:*)", "Bash(gh pr merge:*)", "Bash(gh secret:*)", "Bash(pip:*)",
+                  "Bash(curl:*)", "Bash(sed -i:*)", "Write(.github/workflows/**)"):
+        assert guard in build["permissions"]["deny"], guard
+    review = allowed_tools(read_worker_routing("Review", ROOT))
+    assert "Bash(git:*)" not in review and "Bash(git diff:*)" in review

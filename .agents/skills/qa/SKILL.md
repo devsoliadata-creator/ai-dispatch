@@ -8,7 +8,7 @@ metadata:
   worker-model: sonnet
   worker-effort: medium
   worker-access: write
-  worker-max-turns: 60
+  worker-max-turns: 100
 ---
 
 # QA

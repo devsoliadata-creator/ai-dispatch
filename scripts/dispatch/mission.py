@@ -31,6 +31,15 @@ EXECUTION_RULES = """- Read AGENTS.md and CLAUDE.md (whichever exist) before cha
   allow-list matches command prefixes and a leading `cd ... &&` is denied.
 - Dependencies are already installed by the workflow. Never install packages;
   if the verify command fails on a missing module, report it as a blocker.
+- Tools you have: file edits, any `git` command except force-push / push to
+  the default branch / remote or global-config changes, `gh pr`/`gh issue`
+  read-and-comment plus `gh pr create|edit`, the verify command, pytest /
+  unittest, and the usual read tools (find, grep, sed -n, awk, diff, cat).
+  Redirect output only to files inside the repository, never to /tmp. You do
+  NOT have: pip/npm/curl/wget, python3 -c, bash -c, sed -i (use the Edit
+  tool), gh merge/secret/workflow, or edits under .github/workflows. A denied
+  command will stay denied: do not retry it in another form -- work around it
+  with an allowed tool or report the blocker.
 - Run `{verify}` before opening or updating the PR.
 - Do not loop. Work the phases in order once. If the same fix fails twice, or
   the verify command is still red after two repair attempts, stop: hand back

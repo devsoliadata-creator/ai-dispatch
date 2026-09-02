@@ -8,7 +8,7 @@ metadata:
   worker-model: sonnet
   worker-effort: medium
   worker-access: read-only
-  worker-max-turns: 30
+  worker-max-turns: 40
 ---
 
 # Review

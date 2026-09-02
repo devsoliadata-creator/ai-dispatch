@@ -68,16 +68,19 @@ _READ_TOOLS = (
     "Glob",
     "Grep",
     "LS",
-    # Sub-agents (``.claude/agents/*.md``) run under this same permission
-    # profile, so a worker may fan out review/QA/research without widening
-    # what the run can touch.
+    # Sub-agents run under this same permission profile.
     "Agent",
+    # Inspecting the repository (read-only git verbs; write profiles get git:*)
     "Bash(git status:*)",
     "Bash(git log:*)",
     "Bash(git diff:*)",
     "Bash(git show:*)",
     "Bash(git branch:*)",
     "Bash(git fetch:*)",
+    "Bash(git blame:*)",
+    "Bash(git ls-files:*)",
+    "Bash(git rev-parse:*)",
+    "Bash(git grep:*)",
     "Bash(git worktree list:*)",
     "Bash(ls:*)",
     "Bash(cat:*)",
@@ -85,9 +88,22 @@ _READ_TOOLS = (
     "Bash(tail:*)",
     "Bash(wc:*)",
     "Bash(grep:*)",
-    # Python only through the named entry points a mission needs. Never the
-    # bare interpreter: `python3 -c` or `python3 <any file>` is an
-    # unrestricted shell, and so is anything that installs packages.
+    "Bash(find:*)",
+    "Bash(sed:*)",
+    "Bash(awk:*)",
+    "Bash(sort:*)",
+    "Bash(uniq:*)",
+    "Bash(diff:*)",
+    "Bash(echo:*)",
+    "Bash(printf:*)",
+    "Bash(true:*)",
+    "Bash(test:*)",
+    "Bash(pwd:*)",
+    "Bash(which:*)",
+    "Bash(date:*)",
+    # Python only through the entry points a mission needs. Never the bare
+    # interpreter: `python3 -c` or `python3 <any file>` is an unrestricted
+    # shell, and so is anything that installs packages.
     "Bash(python3 -m pytest:*)",
     "Bash(python3 -m unittest:*)",
     "Bash(python3 -m scripts.dispatch complete:*)",
@@ -98,8 +114,10 @@ _READ_TOOLS = (
     "Bash(gh pr comment:*)",
     "Bash(gh pr review:*)",
     "Bash(gh issue view:*)",
+    "Bash(gh issue list:*)",
     "Bash(gh issue comment:*)",
     "Bash(gh run view:*)",
+    "Bash(gh run list:*)",
 )
 
 #: Added for ``write`` skills: editing, committing, pushing, and opening or
@@ -110,20 +128,18 @@ _WRITE_TOOLS = (
     "MultiEdit",
     "Write",
     "NotebookEdit",
-    "Bash(git add:*)",
-    "Bash(git commit:*)",
-    "Bash(git checkout:*)",
-    "Bash(git switch:*)",
-    "Bash(git stash:*)",
-    "Bash(git push:*)",
-    "Bash(git worktree add:*)",
+    # Every git verb; the dangerous ones are denied by name below (deny wins).
+    "Bash(git:*)",
     "Bash(mkdir:*)",
     "Bash(cp:*)",
     "Bash(mv:*)",
     "Bash(touch:*)",
+    "Bash(rm:*)",
+    "Bash(chmod:*)",
     "Bash(gh pr create:*)",
     "Bash(gh pr edit:*)",
     "Bash(gh pr ready:*)",
+    "Bash(gh issue edit:*)",
 )
 
 #: Never allowed for any dispatched worker, whatever the profile says.
@@ -139,8 +155,15 @@ _DENIED_TOOLS = (
     "Bash(gh api:*)",
     "Bash(git push --force:*)",
     "Bash(git push -f:*)",
+    "Bash(git push --force-with-lease:*)",
     "Bash(git push origin main:*)",
+    "Bash(git push origin master:*)",
     "Bash(git push origin HEAD:main:*)",
+    "Bash(git push origin HEAD:master:*)",
+    "Bash(git push --delete:*)",
+    "Bash(git remote:*)",
+    "Bash(git config --global:*)",
+    "Bash(git -c:*)",
     # deploy, remote access, network
     "Bash(bash scripts/deploy.sh:*)",
     "Bash(scripts/deploy.sh:*)",
@@ -171,17 +194,19 @@ _DENIED_TOOLS = (
     "Bash(env:*)",
     "Bash(eval:*)",
     "Bash(xargs:*)",
-    "Bash(sed:*)",
-    "Bash(awk:*)",
-    "Bash(find:*)",
-    "Bash(rg:*)",
-    "Bash(git rebase:*)",
-    "Bash(git -c:*)",
+    "Bash(find * -exec:*)",
+    "Bash(find * -delete:*)",
+    "Bash(sed -i:*)",
+    "Bash(rm -rf /:*)",
+    "Bash(rm -rf ~:*)",
     # the repository's own git plumbing: a hook written here would run on
     # the next allowed `git commit`
     "Edit(.git/**)",
     "MultiEdit(.git/**)",
     "Write(.git/**)",
+    "Edit(.github/workflows/**)",
+    "MultiEdit(.github/workflows/**)",
+    "Write(.github/workflows/**)",
 )
 
 #: The only shapes a ``Bash(...)`` allow entry may take. Every entry must be
@@ -189,21 +214,10 @@ _DENIED_TOOLS = (
 #: regression tests enforce it so a later edit cannot quietly re-open a
 #: general interpreter.
 _ALLOWED_BASH_PREFIXES = (
-    "git ",
-    "gh ",
-    "ls",
-    "cat",
-    "head",
-    "tail",
-    "wc",
-    "grep",
-    "mkdir",
-    "cp",
-    "mv",
-    "touch",
-    "python3 -m pytest",
-    "python3 -m unittest",
-    "python3 -m scripts.dispatch complete",
+    "git", "gh ", "ls", "cat", "head", "tail", "wc", "grep", "find", "sed", "awk", "sort", "uniq",
+    "diff", "echo", "printf", "true", "test", "pwd", "which", "date",
+    "mkdir", "cp", "mv", "touch", "rm", "chmod",
+    "python3 -m pytest", "python3 -m unittest", "python3 -m scripts.dispatch complete",
 )
 
 #: The shapes a repository's ``verify_command`` may take. One fixed test /
