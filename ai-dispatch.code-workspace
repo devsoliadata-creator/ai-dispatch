@@ -1,0 +1,101 @@
+{
+  // Open with: File → Open Workspace from File… → this file.
+  // Multi-root: every repo appears in its own Explorer section and in the
+  // Source Control view. Add more repos by appending to "folders".
+  "folders": [
+    { "name": "🧭 ai-dispatch (shared layer)", "path": "." },
+    { "name": "🤖 personal-assistant", "path": "../personal-assistant" }
+  ],
+
+  "settings": {
+    // ---- Git status everywhere
+    "git.autofetch": true,
+    "git.autofetchPeriod": 120,
+    "git.confirmSync": false,
+    "git.enableSmartCommit": true,
+    "git.openRepositoryInParentFolders": "always",
+    "git.decorations.enabled": true,
+    "scm.alwaysShowRepositories": true,
+    "scm.defaultViewMode": "tree",
+    "explorer.decorations.colors": true,
+    "explorer.decorations.badges": true,
+    "workbench.editor.decorations.colors": true,
+
+    // ---- GitHub PRs / Actions in the sidebar
+    "githubPullRequests.pullBranch": "never",
+    "githubPullRequests.queries": [
+      { "label": "⏳ Waiting on CTO",   "query": "is:open is:pr label:cto:review user:devsoliadata-creator" },
+      { "label": "✅ Ready to merge",   "query": "is:open is:pr label:cto:approved user:devsoliadata-creator" },
+      { "label": "🤖 Claude's PRs",     "query": "is:open is:pr author:app/claude user:devsoliadata-creator" },
+      { "label": "All mine",           "query": "is:open is:pr user:devsoliadata-creator" }
+    ],
+    "githubIssues.queries": [
+      { "label": "🟢 Ready",          "query": "is:open is:issue label:agent:claude -label:cto:review user:devsoliadata-creator" },
+      { "label": "🔎 In review",      "query": "is:open is:issue label:cto:review user:devsoliadata-creator" },
+      { "label": "🚫 Blocked",        "query": "is:open is:issue \"State: Blocked\" in:body user:devsoliadata-creator" },
+      { "label": "Everything open",   "query": "is:open is:issue user:devsoliadata-creator" }
+    ],
+    "github-actions.workflows.pinned.workflows": [
+      ".github/workflows/ai-dispatch.yml",
+      ".github/workflows/ci.yml",
+      ".github/workflows/deploy-vps.yml"
+    ],
+    "github-actions.workflows.pinned.refresh.enabled": true,
+    "github-actions.workflows.pinned.refresh.interval": 60,
+
+    // ---- Readability
+    "workbench.colorTheme": "GitHub Dark Default",
+    "workbench.iconTheme": "material-icon-theme",
+    "workbench.tree.indent": 14,
+    "editor.minimap.enabled": false,
+    "editor.wordWrap": "on",
+    "files.trimTrailingWhitespace": true,
+    "yaml.schemas": {
+      "https://json.schemastore.org/github-workflow.json": ".github/workflows/*.yml"
+    },
+    "terminal.integrated.env.osx": { "PATH": "${env:HOME}/.local/bin:/opt/homebrew/bin:${env:PATH}" },
+    "files.exclude": { "**/__pycache__": true, "**/.pytest_cache": true, "**/*.pyc": true }
+  },
+
+  "extensions": {
+    "recommendations": [
+      "GitHub.vscode-pull-request-github",
+      "GitHub.vscode-github-actions",
+      "eamodio.gitlens",
+      "mhutchie.git-graph",
+      "GitHub.github-vscode-theme",
+      "PKief.material-icon-theme",
+      "redhat.vscode-yaml",
+      "ms-python.python",
+      "anthropic.claude-code"
+    ]
+  },
+
+  // Terminal → Run Task… (⇧⌘B runs the default: cto list)
+  "tasks": {
+    "version": "2.0.0",
+    "options": { "cwd": "${workspaceFolder:🧭 ai-dispatch (shared layer)}" },
+    "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+    "tasks": [
+      { "label": "cto: list current work", "type": "shell", "command": "cto list",
+        "group": { "kind": "build", "isDefault": true }, "problemMatcher": [] },
+      { "label": "cto: status of an issue", "type": "shell", "command": "cto status ${input:issue}", "problemMatcher": [] },
+      { "label": "cto: new issue", "type": "shell", "command": "cto new \"${input:mission}\"", "problemMatcher": [] },
+      { "label": "cto: watch an issue", "type": "shell", "command": "cto watch ${input:issue}", "isBackground": true, "problemMatcher": [] },
+      { "label": "cto: review PRs now (one tick)", "type": "shell", "command": "bash scripts/cto/cto-review.sh", "problemMatcher": [] },
+      { "label": "cto: fix reviewer (engine, launchd, push)", "type": "shell", "command": "bash \"scripts/cto/Fix CTO reviewer.command\"", "problemMatcher": [] },
+      { "label": "cto: re-pin all repos (bump)", "type": "shell", "command": "cto bump", "problemMatcher": [] },
+      { "label": "git: status of every repo", "type": "shell",
+        "command": "for d in \"${workspaceFolder:🧭 ai-dispatch (shared layer)}\" \"${workspaceFolder:🤖 personal-assistant}\"; do echo \"== $(basename \"$d\")\"; git -C \"$d\" fetch -q; git -C \"$d\" status -sb; echo; done",
+        "problemMatcher": [] },
+      { "label": "git: push every repo", "type": "shell",
+        "command": "for d in \"${workspaceFolder:🧭 ai-dispatch (shared layer)}\" \"${workspaceFolder:🤖 personal-assistant}\"; do echo \"== $(basename \"$d\")\"; git -C \"$d\" push; done",
+        "problemMatcher": [] },
+      { "label": "reviewer: tail log", "type": "shell", "command": "ls -t ~/.cto/log | head -5; echo; tail -40 ~/.cto/log/$(ls -t ~/.cto/log | head -1)", "problemMatcher": [] }
+    ],
+    "inputs": [
+      { "id": "issue", "type": "promptString", "description": "Issue number" },
+      { "id": "mission", "type": "promptString", "description": "What do you want built? (one sentence)" }
+    ]
+  }
+}
