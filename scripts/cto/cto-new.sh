@@ -53,7 +53,14 @@ run_engine "$dir" "$out" "$prompt" 2>"$out.run"
 labels="$(grep -E '^LABELS:' "$out" | tail -1 | sed 's/^LABELS:[[:space:]]*//; s/[[:space:]]//g')"
 [ -n "$labels" ] || { echo "$CTO_ENGINE did not return a LABELS line; see $out and $out.run"; exit 1; }
 body="$(awk '/^# Feature/{p=1} /^LABELS:/{exit} p{print}' "$out")"
+# The gate: a new feature is Proposed until JM (`cto go N`) or the CTO (`CTO: GO`
+# on the issue) clears it. Nothing dispatches from Proposed.
+body="$(printf '%s\n' "$body" | sed -E 's/^\*\*State:\*\*.*/**State:** Proposed/; s/^\*\*Next:\*\*.*/**Next:** CTO approval/')"
 title="$(cut -c1-70 <<<"$request")"
 
-url="$(gh issue create -R "$repo" --title "[Feature] $title" --body "$body" --label "${labels%%,*}" --label "${labels##*,}")"
-echo "Created $url  (labels: $labels)"
+triage=(); [ "${CTO_TRIAGE_NEW:-0}" = "1" ] && triage=(--label cto:triage)
+url="$(gh issue create -R "$repo" --title "[Feature] $title" --body "$body" --label "${labels%%,*}" --label "${labels##*,}" ${triage[@]+"${triage[@]}"})"
+n="${url##*/}"
+echo "Created $url  (labels: $labels; State: Proposed)"
+if [ "${CTO_TRIAGE_NEW:-0}" = "1" ]; then echo "The CTO reviewer will approve or block it within ~5 min (cto:triage)."
+else echo "Approve it:  cto go $n            (or let the CTO decide: gh issue edit $n -R $repo --add-label cto:triage)"; fi

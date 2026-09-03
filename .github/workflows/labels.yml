@@ -24,6 +24,11 @@ jobs:
               { name: "skill:qa", color: "fbca04", description: "Execution skill: user-visible QA" },
               { name: "skill:research", color: "0969da", description: "Execution skill: bounded research" },
               { name: "skill:data", color: "1b7c83", description: "Execution skill: verified data curation" },
+              { name: "cto:triage", color: "bf3989", description: "Awaiting CTO triage (GO / BLOCK on the issue)" },
+              { name: "cto:review", color: "e4e669", description: "Awaiting the CTO verdict on the PR" },
+              { name: "cto:approved", color: "0e8a16", description: "CTO approved; merge it" },
+              { name: "DEPLOY TO PROD", color: "b60205", description: "JM: ship this Done feature to production" },
+              { name: "deployed", color: "0e8a16", description: "Shipped to production via DEPLOY TO PROD" },
             ];
             for (const label of labels) {
               try {

@@ -9,6 +9,9 @@
 #   cto onboard owner/repo [--verify "npm test"] [--direct]   connect another repo (files, secret, labels, PR)
 #   cto repos                          list your repos and whether each is connected
 #   cto bump [--direct]                re-pin every connected repo to the current ai-dispatch main (PR per repo)
+#   cto go 55 [build|debug|qa|...] ["guidance"]   approve a Proposed/Blocked issue: posts `CTO: GO` (dispatches)
+#   cto block 55 "reason"              keep it Blocked for your decision: posts `CTO: BLOCK`
+#   cto deploy 55                      ship a Done issue: adds the `DEPLOY TO PROD` label
 #   cto retry 55                       put a Blocked/Review issue back to Ready so it dispatches again
 #   cto assign 51 build                CTO assignment: Agent Claude + Skill + labels, State Ready (dispatches)
 #   cto handback 55 57                 manual hand-back: issue -> Review with PR #57, PR gets cto:review
@@ -25,7 +28,7 @@ here="$(cd "$(dirname "$self")" && pwd)"
 
 field() { sed -n "s/^\*\*$1:\*\*[[:space:]]*//p" | head -1; }
 
-usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+usage() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
 
 cmd_new() {
   local repo="$CTO_DEFAULT_REPO" desc="${1:-}"
@@ -61,7 +64,30 @@ cmd_status() {
     Done) printf '\n  done.\n' ;;
     "In Progress") printf '\n  Claude is working; check back in a few minutes.\n' ;;
     Ready) printf '\n  queued; dispatch fires on the next issue event (or: gh workflow run ai-dispatch.yml -f issue=%s)\n' "$n" ;;
+    Proposed) printf '\n  >> NEEDS APPROVAL: cto go %s [skill] ["guidance"]  (or the CTO triages it if cto:triage is on)\n' "$n" ;;
   esac
+}
+
+cmd_go() {
+  local n="${1:?issue number}" skill="${2:-}" note="${3:-}" repo="${CTO_DEFAULT_REPO}"
+  case "$skill" in ""|build|debug|qa|review|research|data) ;; *) note="$skill"; skill="" ;; esac
+  local line="CTO: GO agent=Claude"; [ -n "$skill" ] && line="$line skill=$skill"
+  gh issue comment "$n" -R "$repo" --body "$line"$'\n'"$note" >/dev/null
+  echo "#$n: posted '$line' -> Ready; the verdict workflow starts the dispatch." && sleep 5 && cmd_status "$n" "$repo"
+}
+
+cmd_block() {
+  local n="${1:?issue number}" reason="${2:?reason}" repo="${CTO_DEFAULT_REPO}"
+  gh issue comment "$n" -R "$repo" --body "CTO: BLOCK $reason" >/dev/null
+  echo "#$n: blocked for your decision ($reason)."
+}
+
+cmd_deploy() {
+  local n="${1:?issue number}" repo="${CTO_DEFAULT_REPO}"
+  local state; state="$(gh issue view "$n" -R "$repo" --json body --jq .body | field State)"
+  [ "$state" = "Done" ] || { echo "#$n is $state, not Done -- merge the CTO-approved PR first."; exit 1; }
+  gh issue edit "$n" -R "$repo" --add-label "DEPLOY TO PROD" >/dev/null
+  echo "#$n: DEPLOY TO PROD label added; the deploy workflow starts within a minute (watch: gh run list -R $repo -L 3)."
 }
 
 cmd_list() {
@@ -75,6 +101,9 @@ cmd_list() {
   printf '\nPRS WAITING ON YOU (cto:approved)\n'
   gh search prs --owner "$CTO_OWNER" --state open --label cto:approved --limit 20 --json repository,number,title,url \
     --jq '.[] | "  \(.repository.nameWithOwner)#\(.number) \(.title)\n      \(.url)"'
+  printf '\nISSUES AWAITING CTO GO/BLOCK (cto:triage)\n'
+  gh search issues --owner "$CTO_OWNER" --state open --label cto:triage --limit 20 --json repository,number,title \
+    --jq '.[] | "  \(.repository.nameWithOwner)#\(.number) \(.title)"'
   printf '\nPRS AWAITING CTO VERDICT (cto:review)\n'
   gh search prs --owner "$CTO_OWNER" --state open --label cto:review --limit 20 --json repository,number,title \
     --jq '.[] | "  \(.repository.nameWithOwner)#\(.number) \(.title)"'
@@ -148,6 +177,9 @@ case "${1:-}" in
   onboard) shift; exec bash "$here/onboard-repo.sh" "$@" ;;
   repos) cmd_repos ;;
   bump) shift; cmd_bump "$@" ;;
+  go) shift; cmd_go "$@" ;;
+  block) shift; cmd_block "$@" ;;
+  deploy) shift; cmd_deploy "$@" ;;
   retry) shift; cmd_retry "$@" ;;
   assign) shift; cmd_assign "$@" ;;
   handback) shift; cmd_handback "$@" ;;

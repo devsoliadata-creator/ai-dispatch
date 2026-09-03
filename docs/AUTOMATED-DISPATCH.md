@@ -5,6 +5,31 @@ It chooses nothing. When the assignment is incomplete, inconsistent, or the
 selected worker has no callable lane, it reports that and stops rather than
 inventing a decision or faking a dispatch.
 
+## The loop, end to end
+
+```
+cto new "…"            issue filed as  Proposed            (nothing runs yet)
+JM: cto go N  |  CTO: GO on the issue       -> Ready       (approval gate)
+automation             -> In Progress, Claude worker runs on the runner
+worker hands back      -> Review, PR labelled cto:review
+   worker exits without hand-back / CI red -> Blocked + cto:triage
+   CTO answers on the issue: CTO: GO <guidance> (re-dispatch) | CTO: BLOCK (JM decision)
+CTO reviews the PR (Mac reviewer = Claude Code with the CTO persona, or ChatGPT)
+   CTO: REWORK skill=X  -> Ready again, notes under ## Rework, re-dispatched at once
+   CTO: BLOCK           -> Blocked, JM decision
+   CTO: APPROVE         -> PR labelled cto:approved
+JM or the ChatGPT agent task merges         -> Done
+JM adds the label  DEPLOY TO PROD  to the Done issue -> deploy workflow runs
+```
+
+`Proposed` is the only state a new issue can start in; `Done` is the only
+state `DEPLOY TO PROD` acts on; a merge never deploys by itself. Every CTO
+decision is one comment starting with `CTO:` from an OWNER / MEMBER /
+COLLABORATOR — on the PR for review verdicts, on the issue for go / block.
+Because those comments are relayed with the workflow token (whose issue
+edits start no new run), the verdict workflow starts the dispatch itself via
+`workflow_dispatch` after GO and REWORK.
+
 ## What Julia sees
 
 The feature control issue, and only the feature control issue:
@@ -131,7 +156,7 @@ plus CTO merge is the process control.
 
 All of these, or nothing happens:
 
-- `State: Ready`
+- `State: Ready` (`Proposed` waits for `CTO: GO`)
 - `Agent` is one of Claude / Codex / Local (not `Unassigned`)
 - `Skill` is one of Build / Debug / Review / QA / Research / Data (not `Unassigned`)
 - `Blocker: None`

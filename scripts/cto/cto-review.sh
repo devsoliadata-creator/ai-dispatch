@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# CTO review, run from the Mac: finds every open PR labeled `cto:review`
-# across the owner's repos, has the engine (Claude Code CLI on the Max plan by
-# default, or Codex) review the actual checkout with the CTO persona, and posts
-# the verdict as a PR comment under the owner's GitHub login. The repo's
-# CTO-verdict workflow relays it to the control issue.
+# CTO, run from the Mac every few minutes. Two duties, both answered by the
+# engine (Claude Code CLI on the Max plan by default, or Codex) running the
+# CTO persona against a real checkout, posted under the owner's GitHub login
+# and relayed by the repo's CTO-verdict workflow:
+#   1. issues labeled `cto:triage` -> `CTO: GO ...` (dispatch) or `CTO: BLOCK ...`
+#      (a Blocked worker hand-back, or a new Proposed feature when CTO_TRIAGE_NEW=1)
+#   2. PRs labeled `cto:review`    -> `CTO: APPROVE` / `REWORK` / `BLOCK`
 #
 # Requires: gh (logged in), git, and the engine: claude (Claude Code CLI, Max plan; default) or codex.
 # Config (env or ~/.cto/config): CTO_OWNER, CTO_REPOS (space-separated
@@ -64,6 +66,56 @@ for tool in gh git jq "$CTO_ENGINE"; do
   command -v "$tool" >/dev/null || { log "missing $tool"; exit 1; }
 done
 
+# ---------------------------------------------------------------- 1. triage
+issues="$(gh search issues --owner "$CTO_OWNER" --label cto:triage --state open --limit 20 \
+        --json number,repository --jq '.[] | "\(.repository.nameWithOwner) \(.number)"')"
+while read -r repo number; do
+  [ -n "$repo" ] || continue
+  if [ -n "$CTO_REPOS" ] && ! grep -qw -- "${repo#*/}" <<<"$CTO_REPOS"; then continue; fi
+  issue="$(gh issue view "$number" -R "$repo" --json title,body,url,comments,labels)"
+  # Already answered? (the verdict workflow removes the label; if it has not yet, do not answer twice)
+  if jq -e '[.comments[] | select(.body | test("^\\s*CTO:\\s*(GO|BLOCK)"))] | length > 0' <<<"$issue" >/dev/null; then
+    log "$repo#$number already has a CTO go/block; skipping"; continue
+  fi
+  state="$(jq -r .body <<<"$issue" | sed -nE 's/^\*\*State:\*\*[[:space:]]*(.*)[[:space:]]*$/\1/p' | head -1)"
+  if [ "$state" = "Proposed" ] && [ "${CTO_TRIAGE_NEW:-0}" != "1" ]; then
+    log "$repo#$number is Proposed and CTO_TRIAGE_NEW is off; JM approves with: cto go $number"; continue
+  fi
+  log "triaging $repo#$number ($state)"
+  dir="$CTO_WORKDIR/${repo#*/}"
+  if [ ! -d "$dir/.git" ]; then gh repo clone "$repo" "$dir" -- --quiet; fi
+  git -C "$dir" fetch --quiet origin && git -C "$dir" checkout --quiet --detach origin/HEAD 2>/dev/null || true
+  prompt="$(cat "$CTO_PROMPT")
+
+---
+
+You are triaging control issue $(jq -r .url <<<"$issue") in this checkout of $repo (default branch).
+State: $state. Read AGENTS.md / CLAUDE.md and the code the issue touches. Read the whole thread below;
+if the worker was Blocked, its last comments hold the evidence -- diagnose the real cause, do not restate it.
+
+ISSUE TITLE: $(jq -r .title <<<"$issue")
+
+ISSUE BODY:
+$(jq -r .body <<<"$issue")
+
+COMMENTS (oldest first):
+$(jq -r '.comments[] | "--- \(.author.login) at \(.createdAt)\n\(.body)"' <<<"$issue" | tail -c 20000)
+
+Decide. Output your reasoning briefly, then ONE final block and nothing after it:
+either
+CTO: GO skill=<Build|Debug|QA|Research|Data> agent=Claude
+<3-8 lines of concrete guidance for the worker: what to change, what NOT to retry, how to verify>
+or
+CTO: BLOCK <one line: the decision only JM can make>"
+  out="$CTO_HOME/log/$(date +%Y%m%d-%H%M%S)-triage-${repo#*/}-$number.md"
+  if ! run_engine "$dir" "$out" "$prompt" 2>"$out.run"; then log "$CTO_ENGINE failed for $repo#$number triage (see $out.run)"; continue; fi
+  verdict="$(awk 'BEGIN{p=0} /^[[:space:]]*CTO:[[:space:]]*(GO|BLOCK)/{p=1; buf=""} p{buf=buf $0 "\n"} END{printf "%s", buf}' "$out")"
+  if [ -z "$verdict" ]; then log "no CTO: GO/BLOCK block in output for $repo#$number"; continue; fi
+  printf '%s' "$verdict" | gh issue comment "$number" -R "$repo" --body-file -
+  log "posted triage for $repo#$number: $(head -1 <<<"$verdict")"
+done <<<"$issues"
+
+# ---------------------------------------------------------------- 2. review
 prs="$(gh search prs --owner "$CTO_OWNER" --label cto:review --state open --limit 20 \
         --json number,repository --jq '.[] | "\(.repository.nameWithOwner) \(.number)"')"
 [ -n "$prs" ] || { log "nothing to review"; exit 0; }

@@ -23,6 +23,15 @@ A non-CTO worker may:
 
 A non-CTO worker must not claim a CTO decision, choose or materially change architecture, rescope the mission, assign itself, or dispatch another worker merely because this skill was loaded. When direction is not already recorded, set `Next: CTO decision` and stop expansion.
 
+## The verdict grammar (the only way decisions enter the pipeline)
+
+One comment, first line `CTO:`, from an OWNER / MEMBER / COLLABORATOR:
+
+- on the control issue — `CTO: GO [skill=Build|Debug|QA|Research|Data] [agent=Claude]` + guidance lines (Proposed or Blocked → Ready, dispatched), or `CTO: BLOCK <reason>` (stays Blocked for JM);
+- on the pull request — `CTO: APPROVE`, `CTO: REWORK skill=X` + numbered changes, or `CTO: BLOCK <reason>`.
+
+States: Proposed → Ready → In Progress → Review → Done, with Blocked as the detour. Labels that mean "someone must act": `cto:triage` (CTO, on the issue), `cto:review` (CTO, on the PR), `cto:approved` (merge it), `DEPLOY TO PROD` (JM only; ships a Done issue). A merge never deploys.
+
 ## Reconcile the live state
 
 Keep the feature issue's stable status block aligned with durable evidence:

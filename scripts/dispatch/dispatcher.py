@@ -19,6 +19,7 @@ from .status import (
     LEGACY_LABELS,
     SKILLS,
     STATES,
+    TRIAGE_LABEL,
     canonical,
     parse_status,
     routing_labels,
@@ -116,6 +117,7 @@ def _outcome(
     record: dict[str, Any] | None = None,
     mission: str = "",
     worker: dict[str, str] | None = None,
+    issue_labels_add: list[str] | None = None,
 ) -> dict[str, Any]:
     return {
         "action": action,
@@ -128,6 +130,8 @@ def _outcome(
         "record": record,
         "mission": mission,
         "worker": worker or {},
+        # Labels to add on the control issue (never removed here).
+        "issue_labels_add": list(issue_labels_add or []),
     }
 
 
@@ -179,6 +183,8 @@ def decide(payload: dict[str, Any]) -> dict[str, Any]:
             )
         return _outcome("skip", f"state is {state}; nothing to dispatch")
 
+    if state == "Proposed":
+        return _outcome("skip", "state is Proposed; dispatch waits for the CTO's `CTO: GO` on the issue")
     if state != "Ready":
         return _outcome("skip", f"state is {status['State'] or 'unset'}, not Ready")
 
@@ -438,8 +444,10 @@ def reconciliation(payload: dict[str, Any]) -> dict[str, Any]:
         agent=record.get("agent", ""),
         skill=record.get("skill", ""),
         claim_key=record.get("key", ""),
-        status_updates={"State": "Blocked", "Blocker": blocker, "Next": "Retry dispatch"},
+        status_updates={"State": "Blocked", "Blocker": blocker, "Next": "CTO triage"},
         record=failure_record(record, detail, status=status_name),
+        # A blocked worker is the CTO's problem next, not JM's: flag it for triage.
+        issue_labels_add=[TRIAGE_LABEL],
     )
 
 
@@ -629,9 +637,10 @@ def ci_result(payload: dict[str, Any]) -> dict[str, Any]:
         status_updates={
             "State": "Blocked",
             "Blocker": f"Canonical CI failed on {short}",
-            "Next": "Retry dispatch",
+            "Next": "CTO triage",
         },
         record=updated,
+        issue_labels_add=[TRIAGE_LABEL],
     )
 
 

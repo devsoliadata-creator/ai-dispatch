@@ -31,7 +31,11 @@ CTO_ENGINE=claude
 CTO_MODEL=""
 # Repo used by `cto new "..."` / `cto status N` when none is given
 CTO_DEFAULT_REPO=devsoliadata-creator/personal_assistant
+# 1 = the CTO reviewer also approves/blocks NEW (Proposed) issues on its own.
+# 0 = JM approves each new issue herself with `cto go N`; the reviewer only triages Blocked ones.
+CTO_TRIAGE_NEW=0
 EOF
+grep -q '^CTO_TRIAGE_NEW=' "$CTO_HOME/config" || printf '\nCTO_TRIAGE_NEW=0\n' >> "$CTO_HOME/config"
 chmod +x "$here"/*.sh "$here/cto"
 # `cto` on the PATH for zsh
 mkdir -p "$HOME/.local/bin" && ln -sf "$here/cto" "$HOME/.local/bin/cto"

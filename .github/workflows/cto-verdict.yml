@@ -1,22 +1,37 @@
 name: CTO verdict (reusable)
 
-# ChatGPT (free plan) has no API, so its review reaches GitHub as a comment
-# the owner pastes on the PR. A comment starting with `CTO: APPROVE`,
-# `CTO: REWORK` or `CTO: BLOCK` is relayed to the control issue here.
+# One comment shape carries every CTO decision. On a pull request:
+# `CTO: APPROVE` / `CTO: REWORK ...` / `CTO: BLOCK ...` (the review). On the
+# control issue itself: `CTO: GO [skill=..] [agent=..]` / `CTO: BLOCK ...`
+# (the approval gate for a new feature and the triage of a blocked one).
 # Only comments from OWNER / MEMBER / COLLABORATOR count.
+#
+# A verdict that sets the feature Ready must also START the dispatch: the
+# issue edit is made with the workflow token, and GitHub starts no `issues`
+# run for edits made that way. The second job does that with
+# `workflow_dispatch`, the one trigger the token is allowed to fire.
 
 on:
   workflow_call:
     inputs:
       pull:
-        required: true
+        description: "The pull request the verdict was posted on (empty when it was posted on the control issue)"
         type: string
+        default: ""
+      issue:
+        description: "The control issue the verdict was posted on (empty when it was posted on a PR)"
+        type: string
+        default: ""
       comment_body:
         required: true
         type: string
       author_association:
         required: true
         type: string
+      caller_workflow:
+        description: "The caller's workflow file, re-run with workflow_dispatch to start a dispatch after GO / REWORK"
+        type: string
+        default: ai-dispatch.yml
       dispatch_repo:
         type: string
         default: devsoliadata-creator/ai-dispatch
@@ -30,6 +45,9 @@ on:
 jobs:
   relay:
     runs-on: ubuntu-latest
+    outputs:
+      redispatch: ${{ steps.relay.outputs.redispatch }}
+      issue: ${{ steps.relay.outputs.issue }}
     permissions:
       contents: read
       issues: write
@@ -39,6 +57,8 @@ jobs:
       PYTHONPATH: ${{ github.workspace }}/.ai-dispatch
       CTO_COMMENT_BODY: ${{ inputs.comment_body }}
       CTO_COMMENT_AUTHOR_ASSOCIATION: ${{ inputs.author_association }}
+      PULL: ${{ inputs.pull }}
+      ISSUE: ${{ inputs.issue }}
     steps:
       - name: Check out the shared dispatch layer
         uses: actions/checkout@v4
@@ -51,4 +71,31 @@ jobs:
         with:
           python-version: "3.12"
       - name: Relay the verdict to the control issue
-        run: python -P -m scripts.dispatch cto-verdict --pull "${{ inputs.pull }}"
+        id: relay
+        run: |
+          if [ -n "$PULL" ]; then
+            python -P -m scripts.dispatch cto-verdict --pull "$PULL"
+          elif [ -n "$ISSUE" ]; then
+            python -P -m scripts.dispatch cto-verdict --issue "$ISSUE"
+          else
+            echo "::error title=CTO verdict::neither pull nor issue was given"; exit 1
+          fi
+
+  # Starts the worker for a feature the verdict just set Ready.
+  redispatch:
+    needs: relay
+    if: needs.relay.outputs.redispatch == 'true' && needs.relay.outputs.issue != ''
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      CALLER: ${{ inputs.caller_workflow }}
+      BASE: ${{ github.event.repository.default_branch }}
+      ISSUE: ${{ needs.relay.outputs.issue }}
+    steps:
+      - name: Dispatch the feature
+        run: |
+          gh workflow run "$CALLER" --ref "$BASE" -f issue="$ISSUE"
+          echo "::notice title=CTO verdict::dispatch started for #$ISSUE"

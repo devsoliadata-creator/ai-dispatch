@@ -15,7 +15,14 @@ STATUS_HEADING = "Current status"
 
 FIELDS = ("State", "Agent", "Skill", "PR", "Blocker", "Next")
 
-STATES = ("Ready", "In Progress", "Review", "Blocked", "Done")
+STATES = ("Proposed", "Ready", "In Progress", "Review", "Blocked", "Done")
+
+#: On a control issue while it waits for a CTO decision: a new (Proposed)
+#: feature awaiting `CTO: GO`, or a Blocked one awaiting triage. The Mac
+#: reviewer polls for it; the verdict workflow removes it.
+TRIAGE_LABEL = "cto:triage"
+#: JM adds this to a Done control issue to ship it. Nothing else deploys.
+DEPLOY_LABEL = "DEPLOY TO PROD"
 AGENTS = ("Unassigned", "Claude", "Codex", "Local")
 SKILLS = ("Unassigned", "Build", "Debug", "Review", "QA", "Research", "Data")
 

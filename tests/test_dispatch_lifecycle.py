@@ -74,7 +74,7 @@ def test_a_worker_that_exits_without_handing_back_cannot_stay_in_progress():
     assert result["action"] == "fail"
     assert result["status_updates"]["State"] == "Blocked"
     assert "without handing the mission back" in result["status_updates"]["Blocker"]
-    assert result["status_updates"]["Next"] == "Retry dispatch"
+    assert result["status_updates"]["Next"] == "CTO triage"
     assert "scripts.dispatch complete" in result["reason"]
 
 
@@ -159,7 +159,7 @@ def test_reconcile_command_blocks_the_feature_and_fails_the_run(cli):
         api, expect=1)
 
     status = parse_status(api.issue["body"])
-    assert (status["State"], status["Next"]) == ("Blocked", "Retry dispatch")
+    assert (status["State"], status["Next"]) == ("Blocked", "CTO triage")
     assert len(api.comments) == 1, "still one dispatch comment per feature"
     assert parse_record(api.comments[0]["body"])["status"] == "abandoned"
 

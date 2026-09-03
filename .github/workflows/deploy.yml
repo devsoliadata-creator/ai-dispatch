@@ -1,0 +1,64 @@
+name: Deploy to prod (reusable)
+
+# The only path to production: JM adds the `DEPLOY TO PROD` label to a
+# control issue. The feature must be Done (its CTO-approved PR merged);
+# anything else is held with a comment and the label removed, so the label
+# always means "this shipped" or "this was refused", never "pending".
+# The target workflow keeps its own gates (its `production` environment can
+# still require a reviewer).
+
+on:
+  workflow_call:
+    inputs:
+      issue:
+        required: true
+        type: string
+      deploy_workflow:
+        description: "The caller's deploy workflow file, run on the default branch (e.g. deploy-vps.yml). Empty = this repository has no deploy."
+        type: string
+        default: ""
+      label:
+        type: string
+        default: "DEPLOY TO PROD"
+      # Accepted for uniformity with the other reusables (cto bump pins every
+      # caller job the same way); this workflow checks nothing out.
+      dispatch_repo:
+        type: string
+        default: devsoliadata-creator/ai-dispatch
+      dispatch_ref:
+        type: string
+        default: main
+
+jobs:
+  ship:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      issues: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      ISSUE: ${{ inputs.issue }}
+      DEPLOY: ${{ inputs.deploy_workflow }}
+      LABEL: ${{ inputs.label }}
+      BASE: ${{ github.event.repository.default_branch }}
+    steps:
+      - name: Check the feature is Done, then run the deploy workflow
+        run: |
+          gh label create deployed --color 0e8a16 --description "Shipped to production via DEPLOY TO PROD" --force >/dev/null 2>&1 || true
+          body="$(gh issue view "$ISSUE" --json body --jq .body)"
+          state="$(printf '%s\n' "$body" | sed -nE 's/^\*\*State:\*\*[[:space:]]*(.*)[[:space:]]*$/\1/p' | head -1)"
+          if [ -z "$DEPLOY" ]; then
+            gh issue comment "$ISSUE" --body "⛔ **Deploy held**: this repository has no deploy workflow configured (\`deploy_workflow\` in .github/workflows/ai-dispatch.yml)."
+            gh issue edit "$ISSUE" --remove-label "$LABEL"; exit 0
+          fi
+          if [ "$state" != "Done" ]; then
+            gh issue comment "$ISSUE" --body "⛔ **Deploy held**: #$ISSUE is **${state:-unknown}**, not Done. Merge the CTO-approved PR first, then add \`$LABEL\` again."
+            gh issue edit "$ISSUE" --remove-label "$LABEL"; exit 0
+          fi
+          gh workflow run "$DEPLOY" --ref "$BASE"
+          sleep 8
+          url="$(gh run list --workflow "$DEPLOY" -L 1 --json url --jq '.[0].url')"
+          gh issue comment "$ISSUE" --body "🚀 **Deploying** \`$DEPLOY\` on \`$BASE\` (requested by the \`$LABEL\` label): $url"
+          gh issue edit "$ISSUE" --remove-label "$LABEL" --add-label deployed
+          echo "::notice title=Deploy::$DEPLOY started for #$ISSUE -> $url"

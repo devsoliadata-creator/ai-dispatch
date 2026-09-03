@@ -104,6 +104,7 @@ def build_mission(
     """
     sections = {
         "REWORK (CTO review findings -- address these first)": extract_section(body, "Rework"),
+        "CTO GUIDANCE": extract_section(body, "CTO guidance"),
         "OUTCOME": extract_section(body, "Outcome"),
         "SCOPE": extract_section(body, "Scope"),
         "ACCEPTANCE": extract_section(body, "Acceptance criteria"),

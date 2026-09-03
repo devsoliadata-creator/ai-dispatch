@@ -75,7 +75,10 @@ elif ! grep -q "workflow_dispatch" .github/workflows/ci.yml; then
   ci_gate=""
   echo "existing ci.yml has no workflow_dispatch inputs -> canonical CI gate off (add the template's inputs + report job later to enable)"
 fi
-python3 "$here/pin.py" . "$sha" --setup "$setup" --verify "$verify" --ci "$ci_gate"
+# deploy workflow: the first workflow file whose name says deploy, if any (JM ships with the DEPLOY TO PROD label)
+deploy="$(ls .github/workflows 2>/dev/null | grep -iE '^deploy.*\.ya?ml$' | head -1 || true)"
+echo "deploy workflow: '${deploy:-<none>}'"
+python3 "$here/pin.py" . "$sha" --setup "$setup" --verify "$verify" --ci "$ci_gate" --deploy "$deploy"
 
 [ -f AGENTS.md ] || cp "$tpl/AGENTS.md" AGENTS.md
 [ -f .github/ISSUE_TEMPLATE/feature.md ] || cp "$tpl/.github/ISSUE_TEMPLATE/feature.md" .github/ISSUE_TEMPLATE/feature.md
@@ -95,8 +98,11 @@ skill:review|a371f7|Execution skill: adversarial review
 skill:qa|fbca04|Execution skill: user-visible QA
 skill:research|0969da|Execution skill: bounded research
 skill:data|1b7c83|Execution skill: verified data curation
-cto:review|e4e669|Awaiting the CTO verdict
-cto:approved|0e8a16|CTO approved; owner merges
+cto:triage|bf3989|Awaiting CTO triage (GO / BLOCK on the issue)
+cto:review|e4e669|Awaiting the CTO verdict on the PR
+cto:approved|0e8a16|CTO approved; merge it
+DEPLOY TO PROD|b60205|JM: ship this Done feature to production
+deployed|0e8a16|Shipped to production via DEPLOY TO PROD
 EOF
 echo "secret + labels set on $repo"
 

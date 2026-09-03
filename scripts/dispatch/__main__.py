@@ -7,6 +7,7 @@
     python -m scripts.dispatch pr-sync     --pull 43
     python -m scripts.dispatch ci-plan     --issue 42 --out target.json
     python -m scripts.dispatch ci-result   --pull 43 --sha abc123 --conclusion failure
+    python -m scripts.dispatch cto-verdict --pull 43 | --issue 42   (CTO_COMMENT_BODY in env)
 
 ``decide`` and ``pr-sync`` reduce to pure functions in ``dispatcher``; the
 commands below are the thin shell that reads GitHub, calls one of them, and
@@ -44,8 +45,8 @@ from .routing import (
     read_all_worker_routing,
     validate_verify_command,
 )
-from .status import apply_status
-from .verdict import REVIEW_LABEL, cto_verdict
+from .status import TRIAGE_LABEL, apply_status
+from .verdict import REVIEW_LABEL, cto_verdict, issue_verdict
 
 #: The repository being dispatched: the workflow's checkout of the caller
 #: repository (GITHUB_WORKSPACE), or the current directory when run by hand.
@@ -133,6 +134,10 @@ def _apply(
         new_body = apply_status(body, updates)
         if new_body != body:
             api.update_issue(issue_number, body=new_body)
+    for label in outcome.get("issue_labels_add") or []:
+        if label == TRIAGE_LABEL:
+            api.ensure_label(label, "bf3989", "Awaiting CTO triage (GO / BLOCK on the issue)")
+        api.add_labels(issue_number, [label])
 
 
 def _emit(outcome: dict[str, Any], out_path: str | None) -> None:
@@ -141,6 +146,16 @@ def _emit(outcome: dict[str, Any], out_path: str | None) -> None:
             json.dump(outcome, handle)
     summary = f"{outcome.get('action')}: {outcome.get('reason')}"
     print(f"::notice title=Feature dispatch::{summary}")
+
+
+def _github_output(**values: Any) -> None:
+    """Expose values to later workflow steps (no-op outside Actions)."""
+    path = os.environ.get("GITHUB_OUTPUT", "")
+    if not path:
+        return
+    with open(path, "a", encoding="utf-8") as handle:
+        for key, value in values.items():
+            handle.write(f"{key}={'' if value is None else value}\n")
 
 
 def cmd_decide(args: argparse.Namespace) -> int:
@@ -301,9 +316,51 @@ def cmd_pr_sync(args: argparse.Namespace) -> int:
     return 0
 
 
+def _apply_verdict(api: GitHub, issue_number: int, issue: dict, outcome: dict[str, Any]) -> None:
+    body = outcome.get("body") or issue.get("body") or ""
+    fields: dict[str, Any] = {}
+    new_body = apply_status(body, outcome.get("status_updates") or {})
+    if new_body != (issue.get("body") or ""):
+        fields["body"] = new_body
+    if outcome.get("labels") is not None:
+        fields["labels"] = outcome["labels"]
+    if fields:
+        api.update_issue(issue_number, **fields)
+
+
 def cmd_cto_verdict(args: argparse.Namespace) -> int:
-    """Relay a `CTO:` comment on a PR to its control issue."""
+    """Relay a `CTO:` comment to the control issue.
+
+    On a PR (`--pull`) the comment is a review verdict; on the control issue
+    itself (`--issue`) it is the go / block decision. Either way, a verdict
+    that sets the feature Ready is announced through `redispatch=true` on
+    GITHUB_OUTPUT: an issue edit made with the workflow token starts no
+    `issues` run, so the workflow must start the dispatch itself.
+    """
     api = GitHub()
+    if args.issue:
+        issue = api.get_issue(args.issue)
+        if "pull_request" in issue:
+            print("::notice title=CTO verdict::--issue names a pull request; use --pull")
+            return 0
+        outcome = issue_verdict(
+            {
+                "issue": {"number": args.issue, "body": issue.get("body") or "", "labels": label_names(issue)},
+                "comment": {
+                    "body": os.environ.get("CTO_COMMENT_BODY", ""),
+                    "author_association": os.environ.get("CTO_COMMENT_AUTHOR_ASSOCIATION", ""),
+                },
+                "now": _now(),
+            }
+        )
+        if outcome["action"] != "skip":
+            _apply_verdict(api, args.issue, issue, outcome)
+            if outcome.get("reply"):
+                api.create_comment(args.issue, outcome["reply"])
+        _github_output(redispatch="true" if outcome["action"] == "go" else "false", issue=args.issue)
+        _emit(outcome, args.out)
+        return 0
+
     pull = api.get_pull(args.pull)
     issue_number = control_issue_from_pr(pull.get("body") or "")
     if issue_number is None:
@@ -322,21 +379,14 @@ def cmd_cto_verdict(args: argparse.Namespace) -> int:
         }
     )
     if outcome["action"] != "skip":
-        body = outcome.get("body") or issue.get("body") or ""
-        fields: dict[str, Any] = {}
-        new_body = apply_status(body, outcome.get("status_updates") or {})
-        if new_body != (issue.get("body") or ""):
-            fields["body"] = new_body
-        if outcome.get("labels") is not None:
-            fields["labels"] = outcome["labels"]
-        if fields:
-            api.update_issue(issue_number, **fields)
+        _apply_verdict(api, issue_number, issue, outcome)
         for label in outcome.get("pr_labels_add") or []:
             api.add_labels(pull["number"], [label])
         for label in outcome.get("pr_labels_remove") or []:
             api.remove_label(pull["number"], label)
         if outcome.get("reply"):
             api.create_comment(pull["number"], outcome["reply"])
+    _github_output(redispatch="true" if outcome["action"] == "rework" else "false", issue=issue_number)
     _emit(outcome, args.out)
     return 0
 
@@ -436,8 +486,9 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--out")
     sync.set_defaults(func=cmd_pr_sync)
 
-    verdict = sub.add_parser("cto-verdict", help="relay a CTO: comment on a PR to its control issue")
-    verdict.add_argument("--pull", type=int, required=True)
+    verdict = sub.add_parser("cto-verdict", help="relay a CTO: comment (on a PR or on the control issue)")
+    verdict.add_argument("--pull", type=int, default=0, help="the PR the verdict was posted on")
+    verdict.add_argument("--issue", type=int, default=0, help="the control issue the go/block was posted on")
     verdict.add_argument("--out")
     verdict.set_defaults(func=cmd_cto_verdict)
     return parser

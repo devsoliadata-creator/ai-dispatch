@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Pin (or re-pin) a repository's caller workflows to one ai-dispatch commit.
 
-    pin.py <repo-dir> <40-char sha> [--setup CMD] [--verify CMD] [--ci ci.yml|""]
+    pin.py <repo-dir> <40-char sha> [--setup CMD] [--verify CMD] [--ci ci.yml|""] [--deploy deploy.yml|""]
 
 Rewrites every `devsoliadata-creator/ai-dispatch/.github/workflows/*.yml@<ref>`
 to `@<sha>` and sets `dispatch_ref: <sha>` in the `with:` block of each job
@@ -16,6 +16,11 @@ import re
 import sys
 
 SHARED = "devsoliadata-creator/ai-dispatch/.github/workflows/"
+#: Which per-repo inputs belong to which reusable workflow's `with:` block.
+PER_WORKFLOW = {
+    "dispatch": ("setup_command", "verify_command", "ci_workflow"),
+    "deploy": ("deploy_workflow",),
+}
 USES_RE = re.compile(rf"^(\s*)uses:\s*{re.escape(SHARED)}([\w-]+)\.yml@(\S+)\s*$")
 
 
@@ -39,7 +44,7 @@ def pin_text(text: str, sha: str, inputs: dict[str, str]) -> str:
             i += 1; continue
         # the job's remaining sibling keys: lines until a non-blank line with indent <= ind-2 (parent) or == ind that starts a new key we pass through
         j = i + 1
-        wanted = {"dispatch_ref": sha, **(inputs if workflow == "dispatch" else {})}
+        wanted = {"dispatch_ref": sha, **{k: v for k, v in inputs.items() if k in PER_WORKFLOW.get(workflow, ())}}
         rendered = [f"{' ' * (ind + 2)}{k}: {v}\n" if k == "dispatch_ref" else f"{' ' * (ind + 2)}{k}: \"{v}\"\n" for k, v in wanted.items()]
         found_with = False
         while j < len(lines):
@@ -77,7 +82,7 @@ def main(argv: list[str]) -> int:
     repo, sha = pathlib.Path(argv[1]), argv[2]
     if not re.fullmatch(r"[0-9a-f]{40}", sha):
         print(f"not a 40-char sha: {sha}"); return 2
-    flags = {"--setup": "setup_command", "--verify": "verify_command", "--ci": "ci_workflow"}
+    flags = {"--setup": "setup_command", "--verify": "verify_command", "--ci": "ci_workflow", "--deploy": "deploy_workflow"}
     inputs: dict[str, str] = {}
     args = argv[3:]
     while args:

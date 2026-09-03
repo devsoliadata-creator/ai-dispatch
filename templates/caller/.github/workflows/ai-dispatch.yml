@@ -3,7 +3,12 @@ name: AI dispatch
 # Thin caller. All logic lives in devsoliadata-creator/ai-dispatch, pinned to
 # one reviewed commit: every `@<sha>` below and `dispatch_ref` must agree.
 # `cto bump` updates them together. Per-repo settings: setup_command,
-# verify_command, ci_workflow.
+# verify_command, ci_workflow, deploy_workflow.
+#
+# The flow this file wires:
+#   issue (Proposed) --CTO: GO--> Ready --> Claude worker --> PR (cto:review)
+#   --CTO: APPROVE--> cto:approved --> merge --> Done --JM: DEPLOY TO PROD--> deploy
+#   worker blocked --> cto:triage --CTO: GO/BLOCK-->  |  CTO: REWORK --> Ready again
 
 on:
   issues:
@@ -25,7 +30,10 @@ on:
 
 jobs:
   dispatch:
-    if: github.event_name == 'issues' || github.event_name == 'workflow_dispatch'
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issues' && github.event.action != 'labeled' && github.event.action != 'unlabeled') ||
+      (github.event_name == 'issues' && (github.event.label.name == 'agent:claude' || startsWith(github.event.label.name, 'skill:')))
     concurrency:
       group: feature-dispatch-${{ github.event.issue.number || inputs.issue }}
       cancel-in-progress: false
@@ -60,23 +68,37 @@ jobs:
     with:
       pull: "${{ github.event.pull_request.number }}"
       action: ${{ github.event.action }}
-      # REPLACE with this repo's deploy workflow file to auto-deploy after a CTO-approved merge ("" = never).
-      deploy_workflow: ""
     secrets: inherit
 
-  # The owner pastes ChatGPT's verdict on the PR: `CTO: APPROVE` / `CTO: REWORK ...` / `CTO: BLOCK ...`
+  # A `CTO:` comment. On a PR: APPROVE / REWORK / BLOCK (the review). On the
+  # control issue: GO / BLOCK (approval of a new feature, triage of a blocked one).
   cto-verdict:
-    if: github.event_name == 'issue_comment' && github.event.issue.pull_request && startsWith(github.event.comment.body, 'CTO:')
+    if: github.event_name == 'issue_comment' && startsWith(github.event.comment.body, 'CTO:')
     permissions:
       contents: read
       issues: write
       pull-requests: write
+      actions: write
     uses: devsoliadata-creator/ai-dispatch/.github/workflows/cto-verdict.yml@main
     with:
-      pull: "${{ github.event.issue.number }}"
+      pull: "${{ github.event.issue.pull_request && github.event.issue.number || '' }}"
+      issue: "${{ !github.event.issue.pull_request && github.event.issue.number || '' }}"
       comment_body: ${{ github.event.comment.body }}
       author_association: ${{ github.event.comment.author_association }}
     secrets: inherit
+
+  # JM ships a Done feature by adding the `DEPLOY TO PROD` label to its issue.
+  deploy:
+    if: github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'DEPLOY TO PROD'
+    permissions:
+      contents: read
+      issues: write
+      actions: write
+    uses: devsoliadata-creator/ai-dispatch/.github/workflows/deploy.yml@main
+    with:
+      issue: "${{ github.event.issue.number }}"
+      # REPLACE with this repo's deploy workflow file (e.g. deploy-vps.yml); "" = this repo has no deploy.
+      deploy_workflow: ""
 
   labels:
     if: github.event_name == 'workflow_dispatch'

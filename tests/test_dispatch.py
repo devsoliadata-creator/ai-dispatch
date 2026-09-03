@@ -282,7 +282,7 @@ def test_invocation_failure_produces_a_truthful_recoverable_state():
     # spent, so a deliberate retry can dispatch again.
     blocked = apply_status(
         issue_body(),
-        {"State": "Blocked", "Blocker": "Claude invocation failed", "Next": "Retry dispatch"},
+        {"State": "Blocked", "Blocker": "Claude invocation failed", "Next": "CTO triage"},
     )
     assert decide(snapshot(body=blocked, record=failed))["action"] == "skip"
     retried = decide(snapshot(record=failed))
@@ -715,7 +715,7 @@ def test_dispatch_command_updates_the_one_record_comment_in_place(cli):
     status = parse_status(api.issue["body"])
     assert status["State"] == "Blocked"
     assert status["Blocker"] == "Claude invocation failed"
-    assert status["Next"] == "Retry dispatch"
+    assert status["Next"] == "CTO triage"
     assert "Traceback" not in api.issue["body"]
 
 
@@ -1250,3 +1250,98 @@ def test_pr_sync_writes_its_out_file_when_the_reference_is_a_pull_request(cli, t
     d = json.loads(out.read_text())
     assert d["action"] == "skip"
     assert d["status_updates"] == {}
+
+
+# ---------------------------------------------------- approval gate + triage
+
+from scripts.dispatch.verdict import issue_verdict  # noqa: E402
+from scripts.dispatch.dispatcher import ci_result, reconciliation  # noqa: E402
+
+
+def _issue_verdict_payload(comment, body=None, labels=("agent:claude", "skill:build", "cto:triage"), association="OWNER"):
+    return {
+        "issue": {"number": 42, "body": body if body is not None else issue_body(state="Proposed", skill="Build", nxt="CTO approval"), "labels": list(labels)},
+        "comment": {"body": comment, "author_association": association},
+        "now": "2026-09-01T06:00:00Z",
+    }
+
+
+def test_a_proposed_feature_never_dispatches_until_the_cto_says_go():
+    """The gate: cto new files Proposed; only CTO: GO makes it Ready."""
+    routing = read_all_worker_routing(ROOT)
+    proposed = decide(snapshot(body=issue_body(state="Proposed", skill="Build"), labels=("agent:claude", "skill:build"), worker_routing=routing))
+    assert proposed["action"] == "skip" and "CTO: GO" in proposed["reason"]
+
+    go = issue_verdict(_issue_verdict_payload("CTO: GO skill=Debug\nStart from the adapter; do not touch booking."))
+    assert go["action"] == "go"
+    assert go["status_updates"] == {"State": "Ready", "Agent": "Claude", "Skill": "Debug", "Blocker": "None", "Next": "Worker executing"}
+    assert go["labels"] == ["agent:claude", "skill:debug"], "triage label gone, routing labels follow the verdict"
+    assert "## CTO guidance" in go["body"] and "do not touch booking" in go["body"]
+
+    body = apply_status(go["body"], go["status_updates"])
+    decision = decide(snapshot(body=body, labels=tuple(go["labels"]), worker_routing=routing))
+    assert decision["action"] == "dispatch"
+    assert "CTO GUIDANCE" in decision["mission"] and "do not touch booking" in decision["mission"]
+
+
+def test_go_without_arguments_keeps_the_recorded_assignment():
+    go = issue_verdict(_issue_verdict_payload("CTO: GO"))
+    assert go["status_updates"]["Skill"] == "Build" and go["status_updates"]["Agent"] == "Claude"
+    assert "## CTO guidance" not in go["body"]  # nothing to record
+    unassigned = issue_verdict(_issue_verdict_payload("CTO: GO", body=issue_body(state="Proposed", agent="Unassigned", skill="Unassigned")))
+    assert unassigned["status_updates"]["Agent"] == "Claude" and unassigned["status_updates"]["Skill"] == "Build"
+
+
+def test_issue_block_keeps_the_feature_for_jm_and_clears_triage():
+    out = issue_verdict(_issue_verdict_payload("CTO: BLOCK pricing model is a JM decision"))
+    assert out["action"] == "block"
+    assert out["status_updates"] == {"State": "Blocked", "Blocker": "pricing model is a JM decision", "Next": "JM decision"}
+    assert "cto:triage" not in out["labels"]
+
+
+def test_issue_verdicts_need_a_trusted_author_and_never_interrupt_a_worker():
+    assert issue_verdict(_issue_verdict_payload("CTO: GO", association="NONE"))["action"] == "skip"
+    running = issue_verdict(_issue_verdict_payload("CTO: GO", body=issue_body(state="In Progress")))
+    assert running["action"] == "skip"
+    assert issue_verdict(_issue_verdict_payload("CTO: GO", body=issue_body(state="Done")))["action"] == "skip"
+    # GO is not a PR verdict
+    assert cto_verdict(_verdict_payload("CTO: GO"))["action"] == "skip"
+
+
+def test_a_blocked_worker_is_flagged_for_cto_triage():
+    dispatched = decide(snapshot())["record"]
+    body = apply_status(issue_body(), {"State": "In Progress", "Next": "Worker executing"})
+    out = reconciliation({"issue": {"number": 42, "body": body}, "record": dispatched, "worker_outcome": "success"})
+    assert out["status_updates"]["State"] == "Blocked" and out["status_updates"]["Next"] == "CTO triage"
+    assert out["issue_labels_add"] == ["cto:triage"]
+    red = ci_result({"issue": {"number": 42, "body": issue_body(state="Review", pr="#43")}, "record": None, "conclusion": "failure", "sha": "abc1234", "pull": 43})
+    assert red["issue_labels_add"] == ["cto:triage"]
+    # and the triage answer re-opens the road
+    blocked = apply_status(body, out["status_updates"])
+    go = issue_verdict(_issue_verdict_payload("CTO: GO\nInstall nothing; the module is vendored under lib/.", body=blocked))
+    assert go["action"] == "go" and go["status_updates"]["State"] == "Ready"
+
+
+def test_cto_verdict_command_relays_an_issue_comment_and_signals_the_redispatch(cli, tmp_path, monkeypatch):
+    api = FakeGitHub(_issue(body=issue_body(state="Proposed", skill="Build", nxt="CTO approval"), labels=("agent:claude", "skill:build", "cto:triage")))
+    monkeypatch.setenv("CTO_COMMENT_BODY", "CTO: GO skill=Build\nKeep it to the adapter.")
+    monkeypatch.setenv("CTO_COMMENT_AUTHOR_ASSOCIATION", "OWNER")
+    out = tmp_path / "gh_output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    cli(["cto-verdict", "--issue", "42"], api)
+    status = parse_status(api.issue["body"])
+    assert status["State"] == "Ready" and status["Next"] == "Worker executing"
+    assert api.issue["labels"] == ["agent:claude", "skill:build"]
+    assert "redispatch=true" in out.read_text() and "issue=42" in out.read_text()
+    assert any("CTO go" in c["body"] for c in api.comments)
+
+
+def test_pin_sets_the_deploy_workflow_on_the_deploy_job(tmp_path):
+    import shutil
+    shutil.copytree(ROOT / "templates" / "caller", tmp_path / "repo")
+    sha = "0" * 40
+    subprocess.run([sys.executable, str(ROOT / "scripts" / "cto" / "pin.py"), str(tmp_path / "repo"), sha, "--deploy", "deploy-vps.yml", "--verify", "npm test"], check=True, capture_output=True)
+    text = (tmp_path / "repo" / ".github" / "workflows" / "ai-dispatch.yml").read_text()
+    deploy_job = text[text.index("deploy.yml@"):]
+    assert 'deploy_workflow: "deploy-vps.yml"' in deploy_job.split("labels.yml@")[0]
+    assert 'verify_command: "npm test"' in text and text.count(f"@{sha}") == 5
