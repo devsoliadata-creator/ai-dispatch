@@ -24,10 +24,30 @@
     // ---- GitHub PRs / Actions in the sidebar
     "githubPullRequests.pullBranch": "never",
     "githubPullRequests.queries": [
-      { "label": "⏳ Waiting on CTO",   "query": "is:open is:pr label:cto:review user:devsoliadata-creator" },
-      { "label": "✅ Ready to merge",   "query": "is:open is:pr label:cto:approved user:devsoliadata-creator" },
-      { "label": "🤖 Claude's PRs",     "query": "is:open is:pr author:app/claude user:devsoliadata-creator" },
-      { "label": "All mine",           "query": "is:open is:pr user:devsoliadata-creator" }
+      {
+        "label": "Local Pull Request Branches",
+        "query": "default"
+      },
+      {
+        "label": "⏳ Waiting on CTO",
+        "query": "repo:${owner}/${repository} is:open is:pr label:cto:review user:devsoliadata-creator"
+      },
+      {
+        "label": "✅ Ready to merge",
+        "query": "repo:${owner}/${repository} is:open is:pr label:cto:approved user:devsoliadata-creator"
+      },
+      {
+        "label": "🤖 Claude's PRs",
+        "query": "repo:${owner}/${repository} is:open is:pr author:app/claude user:devsoliadata-creator"
+      },
+      {
+        "label": "All mine",
+        "query": "repo:${owner}/${repository} is:open is:pr user:devsoliadata-creator"
+      },
+      {
+        "label": "All Open",
+        "query": "default"
+      }
     ],
     "githubIssues.queries": [
       { "label": "🟢 Ready",          "query": "is:open is:issue label:agent:claude -label:cto:review user:devsoliadata-creator" },
