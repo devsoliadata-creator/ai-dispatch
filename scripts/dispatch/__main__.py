@@ -23,6 +23,7 @@ from typing import Any
 
 from .dispatcher import (
     DISPATCH_MARKER,
+    _outcome,
     ci_plan,
     ci_result,
     completion,
@@ -266,15 +267,19 @@ def cmd_complete(args: argparse.Namespace) -> int:
 
 
 def cmd_pr_sync(args: argparse.Namespace) -> int:
+    # Every exit writes --out. The caller workflow reads that file to decide
+    # whether the merge finished a feature, so a silent early return leaves it
+    # opening a file that was never created and fails the job -- which is what
+    # an ordinary chore PR, carrying no control issue, used to do.
     api = GitHub()
     pull = api.get_pull(args.pull)
     issue_number = control_issue_from_pr(pull.get("body") or "")
     if issue_number is None:
-        print("::notice title=Feature dispatch::pull request references no control issue")
+        _emit(_outcome("skip", "pull request references no control issue"), args.out)
         return 0
     issue = api.get_issue(issue_number)
     if "pull_request" in issue:
-        print("::notice title=Feature dispatch::reference is a pull request, not a control issue")
+        _emit(_outcome("skip", "reference is a pull request, not a control issue"), args.out)
         return 0
     record, comment_id = _find_record(api, issue_number)
     outcome = pr_sync(

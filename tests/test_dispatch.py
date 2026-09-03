@@ -1223,3 +1223,30 @@ def test_pr_sync_command_reports_the_issue_for_the_deploy_job(cli, tmp_path):
     cli(["pr-sync", "--pull", "43", "--out", str(out)], api)
     d = json.loads(out.read_text())
     assert d["issue"] == 42 and d["status_updates"]["State"] == "Done"
+
+
+def test_pr_sync_writes_its_out_file_for_a_pr_with_no_control_issue(cli, tmp_path):
+    """An ordinary chore PR carries no control issue and must still write --out.
+
+    The caller workflow opens that file unconditionally to learn whether the
+    merge finished a feature. Returning early without writing it failed the
+    sync job on every pull request that was not a feature build.
+    """
+    api = FakeGitHub(_issue(), pull={"number": 61, "state": "open", "merged": False, "draft": False,
+                                     "body": "Gate auto-deploy on a label. Not a feature build."})
+    out = tmp_path / "sync.json"
+    cli(["pr-sync", "--pull", "61", "--out", str(out)], api)
+    d = json.loads(out.read_text())
+    assert d["action"] == "skip"
+    assert d["status_updates"] == {}
+
+
+def test_pr_sync_writes_its_out_file_when_the_reference_is_a_pull_request(cli, tmp_path):
+    api = FakeGitHub({"number": 43, "body": "", "pull_request": {"url": "u"}},
+                     pull={"number": 61, "state": "open", "merged": False, "draft": False,
+                           "body": "Control issue: #43"})
+    out = tmp_path / "sync.json"
+    cli(["pr-sync", "--pull", "61", "--out", str(out)], api)
+    d = json.loads(out.read_text())
+    assert d["action"] == "skip"
+    assert d["status_updates"] == {}
