@@ -345,10 +345,12 @@ def test_the_job_that_runs_worker_code_holds_no_write_scope():
         assert "validate" not in jobs_granting(ci, permission)
     assert "ref: ${{ inputs.sha }}" not in jobs["report"], "the reporting job stays on the base"
     assert "statuses: write" in jobs["report"]
+    assert "pull-requests: read" in jobs["report"], "the caller permits PR lookup for control-issue reporting"
     assert "ci-report.yml@" in jobs["report"], "reporting is delegated to the shared ci-report workflow"
     # The verdict lands on the head SHA under its own context, so it can never
     # be confused with the check a `pull_request` run would have published.
     shared = workflow_jobs(_workflow("ci-report.yml"))["report"]
+    assert "pull-requests: read" in shared, "the reusable reporter must request PR lookup access"
     assert f'context="{CI_STATUS_CONTEXT}"' in shared
     assert 'statuses/$SHA' in shared
     assert shared.count("actions/checkout") == 1 and "path: .ai-dispatch" in shared, "it checks out only the shared layer"
